@@ -164,8 +164,10 @@ def export_polygons(output_path, polygons, types, room_polygons, room_types):
             return poly.tolist()
         if hasattr(poly, "coords"):
             try:
-                return [list(map(float, pt)) for pt in poly.coords]
-            except NotImplementedError:
+                coords = list(poly.coords)
+                if coords:
+                    return [list(map(float, pt)) for pt in coords]
+            except (NotImplementedError, TypeError):
                 pass
         try:
             return list(poly)
