@@ -130,8 +130,6 @@ def render_room_views(
         combined = trimesh_mesh
 
     render_mesh = pyrender.Mesh.from_trimesh(combined, smooth=False)
-
-    renderer = pyrender.OffscreenRenderer(width, height)
     render_flags = RenderFlags.SHADOWS_DIRECTIONAL
 
     for idx, room in enumerate(rooms):
@@ -202,17 +200,20 @@ def render_room_views(
                 pose=rim_pose,
             )
 
+            renderer = pyrender.OffscreenRenderer(width, height)
             try:
-                color, _ = renderer.render(scene, flags=render_flags)
-            except Exception:
-                color, _ = renderer.render(scene)
+                try:
+                    color, _ = renderer.render(scene, flags=render_flags)
+                except Exception:
+                    color, _ = renderer.render(scene)
+            finally:
+                renderer.delete()
             image = np.clip(color, 0, 255).astype(np.uint8)
 
             image_path = output_dir / f"{idx:02d}_{slug}_v{view_idx}.png"
             imageio.imwrite(image_path, image)
             print(f"Saved render for {room_label} [view {view_idx}] -> {image_path}")
 
-    renderer.delete()
 
 
 def main():
