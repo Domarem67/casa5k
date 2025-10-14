@@ -1,9 +1,15 @@
 import argparse
 import json
+import os
 from pathlib import Path
 
 import imageio
 import numpy as np
+
+DEFAULT_GL_BACKENDS = ("egl", "osmesa")
+if "PYOPENGL_PLATFORM" not in os.environ:
+    os.environ["PYOPENGL_PLATFORM"] = DEFAULT_GL_BACKENDS[0]
+
 import pyrender
 from pyrender import RenderFlags
 import shapely.geometry as geom
@@ -81,6 +87,35 @@ def generate_camera_poses(polygon, wall_height, n_views=3):
     return poses
 
 
+def make_renderer(width: int, height: int):
+    backends = []
+    current = os.environ.get("PYOPENGL_PLATFORM")
+    if current:
+        backends.append(current)
+    for candidate in DEFAULT_GL_BACKENDS:
+        if candidate not in backends:
+            backends.append(candidate)
+    if "headless" not in backends:
+        backends.append("headless")
+
+    last_exc = None
+    for backend in backends:
+        os.environ["PYOPENGL_PLATFORM"] = backend
+        try:
+            renderer = pyrender.OffscreenRenderer(width, height)
+            try:
+                renderer.render(pyrender.Scene())
+            except Exception:
+                renderer.delete()
+                raise
+            return backend, renderer
+        except Exception as exc:
+            last_exc = exc
+
+    os.environ["PYOPENGL_PLATFORM"] = DEFAULT_GL_BACKENDS[0]
+    raise RuntimeError("Unable to initialise an offscreen OpenGL context") from last_exc
+
+
 def build_camera_pose(eye, target, up_vector=np.array([0.0, 0.0, 1.0])):
     forward = target - eye
     norm = np.linalg.norm(forward)
@@ -131,6 +166,7 @@ def render_room_views(
 
     render_mesh = pyrender.Mesh.from_trimesh(combined, smooth=False)
     render_flags = RenderFlags.SHADOWS_DIRECTIONAL
+    reported_backends = set()
 
     for idx, room in enumerate(rooms):
         points = np.array(room["points"], dtype=float) * scale
@@ -200,7 +236,14 @@ def render_room_views(
                 pose=rim_pose,
             )
 
-            renderer = pyrender.OffscreenRenderer(width, height)
+            try:
+                backend, renderer = make_renderer(width, height)
+                if backend not in reported_backends:
+                    print(f"[render_rooms] Using {backend} backend for offscreen rendering.")
+                    reported_backends.add(backend)
+            except RuntimeError as exc:
+                print(f"[render_rooms] Unable to render rooms: {exc}")
+                return
             try:
                 try:
                     color, _ = renderer.render(scene, flags=render_flags)
