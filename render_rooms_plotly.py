@@ -129,7 +129,17 @@ def main():
 
 
 if __name__ == "__main__":
-    pio.kaleido.scope.default_format = "png"
-    pio.kaleido.scope.default_width = 1280
-    pio.kaleido.scope.default_height = 720
+    if (
+        hasattr(pio, "kaleido")
+        and hasattr(pio.kaleido, "scope")
+        and pio.kaleido.scope is not None
+    ):
+        pio.kaleido.scope.default_format = "png"
+        pio.kaleido.scope.default_width = 1280
+        pio.kaleido.scope.default_height = 720
+    else:
+        print(
+            "[render_rooms_plotly] Kaleido scope unavailable; using engine defaults. "
+            "Ensure `plotly>=5.10` and `kaleido>=0.2.1` for consistent output."
+        )
     main()
