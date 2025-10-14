@@ -98,7 +98,7 @@ def make_renderer(width: int, height: int):
     if "headless" not in backends:
         backends.append("headless")
 
-    last_exc = None
+    last_errors = []
     for backend in backends:
         os.environ["PYOPENGL_PLATFORM"] = backend
         try:
@@ -110,10 +110,13 @@ def make_renderer(width: int, height: int):
                 raise
             return backend, renderer
         except Exception as exc:
-            last_exc = exc
+            last_errors.append((backend, repr(exc)))
 
     os.environ["PYOPENGL_PLATFORM"] = DEFAULT_GL_BACKENDS[0]
-    raise RuntimeError("Unable to initialise an offscreen OpenGL context") from last_exc
+    error_msg = "Unable to initialise an offscreen OpenGL context. Tried:\n"
+    for backend, err in last_errors:
+        error_msg += f"  - {backend}: {err}\n"
+    raise RuntimeError(error_msg.strip())
 
 
 def build_camera_pose(eye, target, up_vector=np.array([0.0, 0.0, 1.0])):
