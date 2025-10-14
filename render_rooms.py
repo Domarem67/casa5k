@@ -206,7 +206,7 @@ def render_room_views(
                 color, _ = renderer.render(scene, flags=render_flags)
             except Exception:
                 color, _ = renderer.render(scene)
-        image = np.clip(color, 0, 255).astype(np.uint8)
+            image = np.clip(color, 0, 255).astype(np.uint8)
 
             image_path = output_dir / f"{idx:02d}_{slug}_v{view_idx}.png"
             imageio.imwrite(image_path, image)
