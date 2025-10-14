@@ -3,6 +3,7 @@ import re
 import xml.etree.ElementTree as ET
 from pathlib import Path
 
+import numpy as np
 import shapely.affinity as affinity
 import shapely.geometry as geom
 import shapely.ops as ops
@@ -24,6 +25,21 @@ ICON_COLOR_TO_LABEL = {
 }
 
 WALL_COLOR = "#444444"
+WALL_RGBA = (200, 200, 215, 255)
+FLOOR_RGBA = (184, 164, 130, 255)
+CEILING_RGBA = (235, 235, 240, 255)
+FRAME_RGBA = (140, 110, 90, 255)
+
+
+def apply_color(mesh: trimesh.Trimesh, rgba):
+    if mesh is None:
+        return None
+    color = np.array(rgba, dtype=np.uint8)
+    if mesh.faces.size > 0:
+        mesh.visual.face_colors = np.tile(color, (len(mesh.faces), 1))
+    else:
+        mesh.visual.vertex_colors = np.tile(color, (len(mesh.vertices), 1))
+    return mesh
 
 
 def parse_path_points(path_d: str):
@@ -238,9 +254,9 @@ def extrude_ceiling(rooms, scale, thickness, wall_height):
     return mesh
 
 
-def export_mesh(mesh: trimesh.Trimesh, output: Path):
+def export_mesh(geometry, output: Path):
     output = Path(output)
-    mesh.export(str(output))
+    geometry.export(str(output))
     print(f"Mesh exported to {output.resolve()}")
 
 
@@ -422,28 +438,43 @@ def main():
             args.height,
         )
 
-    meshes_to_merge = [wall_mesh]
-    if floor_mesh:
-        meshes_to_merge.append(floor_mesh)
-    if ceiling_mesh:
-        meshes_to_merge.append(ceiling_mesh)
-    combined = trimesh.util.concatenate(meshes_to_merge)
+    if args.smooth_walls and wall_mesh is not None:
+        wall_mesh = wall_mesh.copy()
+        wall_mesh.merge_vertices()
+        wall_mesh.remove_duplicate_faces()
+        wall_mesh.remove_degenerate_faces()
+        wall_mesh.remove_unreferenced_vertices()
 
-    if frame_mesh:
-        combined = trimesh.util.concatenate([combined, frame_mesh])
+    meshes = {
+        "walls": wall_mesh,
+        "floor": floor_mesh,
+        "ceiling": ceiling_mesh,
+        "frames": frame_mesh,
+    }
 
-    if args.invert_z:
-        z_min = combined.vertices[:, 2].min()
-        z_max = combined.vertices[:, 2].max()
-        combined.vertices[:, 2] = z_max - (combined.vertices[:, 2] - z_min)
+    valid_meshes = [m for m in meshes.values() if m is not None]
+    if args.invert_z and valid_meshes:
+        all_vertices = np.concatenate([mesh.vertices for mesh in valid_meshes], axis=0)
+        z_min = float(all_vertices[:, 2].min())
+        z_max = float(all_vertices[:, 2].max())
+        for mesh in valid_meshes:
+            mesh.vertices[:, 2] = z_max - (mesh.vertices[:, 2] - z_min)
 
-    if args.smooth_walls:
-        combined.merge_vertices()
-        combined.remove_duplicate_faces()
-        combined.remove_degenerate_faces()
-        combined.remove_unreferenced_vertices()
+    scene = trimesh.Scene()
+    if meshes["walls"] is not None:
+        apply_color(meshes["walls"], WALL_RGBA)
+        scene.add_geometry(meshes["walls"], node_name="walls")
+    if meshes["floor"] is not None:
+        apply_color(meshes["floor"], FLOOR_RGBA)
+        scene.add_geometry(meshes["floor"], node_name="floor")
+    if meshes["ceiling"] is not None:
+        apply_color(meshes["ceiling"], CEILING_RGBA)
+        scene.add_geometry(meshes["ceiling"], node_name="ceiling")
+    if meshes["frames"] is not None:
+        apply_color(meshes["frames"], FRAME_RGBA)
+        scene.add_geometry(meshes["frames"], node_name="frames")
 
-    export_mesh(combined, args.output)
+    export_mesh(scene, args.output)
 
 
 if __name__ == "__main__":

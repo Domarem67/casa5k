@@ -9,42 +9,75 @@ import shapely.geometry as geom
 import trimesh
 
 
-def resolve_camera_pose(centroid, polygon, wall_height):
+def _principal_directions(polygon, n_views):
+    centroid = polygon.centroid
     centroid_xy = np.array([centroid.x, centroid.y])
     coords = np.array(polygon.exterior.coords[:-1])
     if coords.shape[0] < 3:
-        direction = np.array([1.0, 0.0])
+        base_dir = np.array([1.0, 0.0])
     else:
         centered = coords - centroid_xy
         cov = centered.T @ centered
         if np.linalg.norm(cov) < 1e-6:
-            direction = np.array([1.0, 0.0])
+            base_dir = np.array([1.0, 0.0])
         else:
             eigvals, eigvecs = np.linalg.eigh(cov)
-            direction = eigvecs[:, np.argmax(eigvals)]
-    direction = direction / np.linalg.norm(direction)
+            base_dir = eigvecs[:, np.argmax(eigvals)]
+    base_dir = base_dir / np.linalg.norm(base_dir)
+
+    angles = np.linspace(0.0, 2.0 * np.pi, num=max(n_views, 1), endpoint=False)
+    directions = []
+    for angle in angles:
+        rot = np.array(
+            [
+                [np.cos(angle), -np.sin(angle)],
+                [np.sin(angle), np.cos(angle)],
+            ]
+        )
+        directions.append(rot @ base_dir)
+    return centroid_xy, directions
+
+
+def generate_camera_poses(polygon, wall_height, n_views=3):
+    if polygon.area <= 1e-6:
+        return []
+    centroid_xy, directions = _principal_directions(polygon, n_views)
 
     area = polygon.area
     nominal_radius = max(np.sqrt(area / np.pi), 1.0)
-    offset_distance = min(max(nominal_radius * 1.2, 1.5), 3.5)
+    max_distance = min(max(nominal_radius * 1.3, 1.8), 3.8)
 
-    buffer_poly = polygon.buffer(-0.1)
-    candidates = [
-        centroid_xy + direction * offset_distance,
-        centroid_xy - direction * offset_distance,
-        centroid_xy + direction * offset_distance * 0.5,
-    ]
-    eye_xy = centroid_xy
-    for candidate in candidates:
-        point = geom.Point(candidate[0], candidate[1])
-        if buffer_poly.is_empty or buffer_poly.contains(point):
-            eye_xy = candidate
-            break
+    buffer_poly = polygon.buffer(-0.15)
+    poses = []
+    for direction in directions:
+        direction = direction / np.linalg.norm(direction)
+        candidates = [
+            centroid_xy + direction * max_distance,
+            centroid_xy + direction * max_distance * 0.65,
+            centroid_xy - direction * max_distance * 0.4,
+            centroid_xy,
+        ]
+        eye_xy = centroid_xy
+        for candidate in candidates:
+            point = geom.Point(candidate[0], candidate[1])
+            if buffer_poly.is_empty or buffer_poly.contains(point):
+                eye_xy = candidate
+                break
 
-    eye_height = min(max(1.5, wall_height * 0.45), wall_height - 0.3)
-    eye = np.array([eye_xy[0], eye_xy[1], eye_height])
-    target = np.array([centroid_xy[0], centroid_xy[1], min(wall_height * 0.5, eye_height)])
-    return eye, target
+        eye_height = min(max(1.5, wall_height * 0.45), wall_height - 0.25)
+        eye = np.array([eye_xy[0], eye_xy[1], eye_height])
+        target_height = min(wall_height * 0.5, eye_height - 0.1)
+        target = np.array([centroid_xy[0], centroid_xy[1], max(target_height, 0.5)])
+
+        poses.append((eye, target))
+
+    # Ensure at least one pose using centroid fallback if all duplicates
+    if not poses:
+        eye_height = min(max(1.5, wall_height * 0.45), wall_height - 0.25)
+        eye = np.array([centroid_xy[0], centroid_xy[1], eye_height])
+        target = np.array([centroid_xy[0], centroid_xy[1], eye_height - 0.1])
+        poses.append((eye, target))
+    return poses
 
 
 def build_camera_pose(eye, target, up_vector=np.array([0.0, 0.0, 1.0])):
@@ -104,35 +137,48 @@ def render_room_views(
         polygon = geom.Polygon(points)
         if polygon.area <= 1e-6:
             continue
-        centroid = polygon.centroid
-
-        eye, target = resolve_camera_pose(centroid, polygon, wall_height)
-        camera_pose = build_camera_pose(eye, target)
-
-        scene = pyrender.Scene(bg_color=[1, 1, 1, 1], ambient_light=[0.4, 0.4, 0.4, 1.0])
-        scene.add(render_mesh)
-
-        camera = pyrender.PerspectiveCamera(
-            yfov=np.deg2rad(60.0), aspectRatio=float(width) / float(height)
-        )
-        scene.add(camera, pose=camera_pose)
-
-        ceiling_light_pose = np.eye(4)
-        ceiling_light_pose[:3, 3] = [centroid.x, centroid.y, wall_height - 0.2]
-        scene.add(pyrender.PointLight(color=np.ones(3), intensity=900.0), pose=ceiling_light_pose)
-
-        sun_pose = np.eye(4)
-        sun_pose[:3, 3] = [centroid.x + 1.0, centroid.y + 1.0, wall_height + 1.5]
-        scene.add(pyrender.DirectionalLight(color=np.ones(3), intensity=3.0), pose=sun_pose)
-
-        color, _ = renderer.render(scene)
-        image = np.clip(color, 0, 255).astype(np.uint8)
 
         room_label = room.get("class", f"room_{idx}")
         slug = room_label.replace(" ", "_").lower()
-        image_path = output_dir / f"{idx:02d}_{slug}.png"
-        imageio.imwrite(image_path, image)
-        print(f"Saved render for {room_label} -> {image_path}")
+
+        poses = generate_camera_poses(polygon, wall_height, n_views=3)
+        centroid = polygon.centroid
+
+        for view_idx, (eye, target) in enumerate(poses, start=1):
+            camera_pose = build_camera_pose(eye, target)
+
+            scene = pyrender.Scene(
+                bg_color=[1, 1, 1, 1],
+                ambient_light=[0.4, 0.4, 0.4, 1.0],
+            )
+            scene.add(render_mesh)
+
+            camera = pyrender.PerspectiveCamera(
+                yfov=np.deg2rad(60.0),
+                aspectRatio=float(width) / float(height),
+            )
+            scene.add(camera, pose=camera_pose)
+
+            ceiling_light_pose = np.eye(4)
+            ceiling_light_pose[:3, 3] = [centroid.x, centroid.y, wall_height - 0.2]
+            scene.add(
+                pyrender.PointLight(color=np.ones(3), intensity=900.0),
+                pose=ceiling_light_pose,
+            )
+
+            sun_pose = np.eye(4)
+            sun_pose[:3, 3] = [centroid.x + 1.0, centroid.y + 1.0, wall_height + 1.5]
+            scene.add(
+                pyrender.DirectionalLight(color=np.ones(3), intensity=3.0),
+                pose=sun_pose,
+            )
+
+            color, _ = renderer.render(scene)
+            image = np.clip(color, 0, 255).astype(np.uint8)
+
+            image_path = output_dir / f"{idx:02d}_{slug}_v{view_idx}.png"
+            imageio.imwrite(image_path, image)
+            print(f"Saved render for {room_label} [view {view_idx}] -> {image_path}")
 
     renderer.delete()
 
