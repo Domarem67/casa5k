@@ -147,12 +147,13 @@ def export_polygons(output_path, polygons, types, room_polygons, room_types):
                 polys = []
                 others = []
                 for part in poly.geoms:
-                    if isinstance(part, Polygon):
-                        polys.append(polygon_coords(part))
-                    elif isinstance(part, MultiPolygon):
-                        polys.extend([polygon_coords(p) for p in part.geoms])
-                    elif hasattr(part, "coords"):
-                        others.append([list(map(float, pt)) for pt in part.coords])
+                    converted = to_list(part)
+                    if not converted:
+                        continue
+                    if isinstance(converted[0], (float, int)):
+                        others.append(converted)
+                    else:
+                        polys.append(converted)
                 if polys:
                     return polys if len(polys) > 1 else polys[0]
                 if others:
@@ -162,7 +163,10 @@ def export_polygons(output_path, polygons, types, room_polygons, room_types):
         if hasattr(poly, "tolist"):
             return poly.tolist()
         if hasattr(poly, "coords"):
-            return [list(map(float, pt)) for pt in poly.coords]
+            try:
+                return [list(map(float, pt)) for pt in poly.coords]
+            except NotImplementedError:
+                pass
         try:
             return list(poly)
         except TypeError:
