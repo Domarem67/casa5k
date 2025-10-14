@@ -134,41 +134,57 @@ def export_polygons(output_path, polygons, types, room_polygons, room_types):
         if isinstance(poly, np.ndarray):
             return poly.tolist()
         try:
-            from shapely.geometry import Polygon, MultiPolygon, GeometryCollection
+            from shapely.geometry import (
+                Polygon,
+                MultiPolygon,
+                GeometryCollection,
+                Point,
+                LineString,
+                LinearRing,
+            )
+            from shapely.geometry.base import BaseGeometry
 
             def polygon_coords(geom):
                 return [list(map(float, pt)) for pt in np.asarray(geom.exterior.coords)]
 
-            if isinstance(poly, Polygon):
-                return polygon_coords(poly)
-            if isinstance(poly, MultiPolygon):
-                return [polygon_coords(part) for part in poly.geoms]
-            if isinstance(poly, GeometryCollection):
-                polys = []
-                others = []
-                for part in poly.geoms:
-                    converted = to_list(part)
-                    if not converted:
-                        continue
-                    if isinstance(converted[0], (float, int)):
-                        others.append(converted)
-                    else:
-                        polys.append(converted)
-                if polys:
-                    return polys if len(polys) > 1 else polys[0]
-                if others:
-                    return others if len(others) > 1 else others[0]
+            if isinstance(poly, BaseGeometry):
+                if poly.is_empty:
+                    return []
+                if isinstance(poly, Polygon):
+                    return polygon_coords(poly)
+                if isinstance(poly, MultiPolygon):
+                    coords = [
+                        polygon_coords(part)
+                        for part in poly.geoms
+                        if not part.is_empty
+                    ]
+                    if not coords:
+                        return []
+                    return coords if len(coords) > 1 else coords[0]
+                if isinstance(poly, (LineString, LinearRing)):
+                    return [list(map(float, pt)) for pt in poly.coords]
+                if isinstance(poly, Point):
+                    return [float(poly.x), float(poly.y)]
+                if isinstance(poly, GeometryCollection):
+                    parts = [
+                        to_list(part)
+                        for part in poly.geoms
+                        if not getattr(part, "is_empty", False)
+                    ]
+                    parts = [part for part in parts if part not in (None, [], {})]
+                    if not parts:
+                        return []
+                    return parts if len(parts) > 1 else parts[0]
+                try:
+                    coords = list(poly.coords)
+                    if coords:
+                        return [list(map(float, pt)) for pt in coords]
+                except (AttributeError, NotImplementedError, TypeError):
+                    pass
         except Exception:
             pass
         if hasattr(poly, "tolist"):
             return poly.tolist()
-        if hasattr(poly, "coords"):
-            try:
-                coords = list(poly.coords)
-                if coords:
-                    return [list(map(float, pt)) for pt in coords]
-            except (NotImplementedError, TypeError):
-                pass
         try:
             return list(poly)
         except TypeError:
