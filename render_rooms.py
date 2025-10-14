@@ -112,7 +112,9 @@ def render_room_views(
         scene = pyrender.Scene(bg_color=[1, 1, 1, 1], ambient_light=[0.4, 0.4, 0.4, 1.0])
         scene.add(render_mesh)
 
-        camera = pyrender.PerspectiveCamera(yfov=np.deg2rad(60.0), aspect=float(width) / float(height))
+        camera = pyrender.PerspectiveCamera(
+            yfov=np.deg2rad(60.0), aspectRatio=float(width) / float(height)
+        )
         scene.add(camera, pose=camera_pose)
 
         ceiling_light_pose = np.eye(4)
