@@ -152,61 +152,61 @@ def render_room_views(
         for view_idx, (eye, target) in enumerate(poses, start=1):
             camera_pose = build_camera_pose(eye, target)
 
-        scene = pyrender.Scene(
-            bg_color=[0.96, 0.96, 0.97, 1.0],
-            ambient_light=[0.14, 0.14, 0.14, 1.0],
-        )
-        scene.add(render_mesh)
+            scene = pyrender.Scene(
+                bg_color=[0.96, 0.96, 0.97, 1.0],
+                ambient_light=[0.14, 0.14, 0.14, 1.0],
+            )
+            scene.add(render_mesh)
 
-        camera = pyrender.PerspectiveCamera(
-            yfov=np.deg2rad(60.0),
-            aspectRatio=float(width) / float(height),
+            camera = pyrender.PerspectiveCamera(
+                yfov=np.deg2rad(60.0),
+                aspectRatio=float(width) / float(height),
             )
             scene.add(camera, pose=camera_pose)
 
-        # soft fill from ceiling centre
-        ceiling_light_pose = np.eye(4)
-        ceiling_light_pose[:3, 3] = [centroid.x, centroid.y, wall_height - 0.1]
-        scene.add(
-            pyrender.PointLight(color=np.array([1.0, 0.97, 0.9]), intensity=650.0),
-            pose=ceiling_light_pose,
-        )
+            # soft fill from ceiling centre
+            ceiling_light_pose = np.eye(4)
+            ceiling_light_pose[:3, 3] = [centroid.x, centroid.y, wall_height - 0.1]
+            scene.add(
+                pyrender.PointLight(color=np.array([1.0, 0.97, 0.9]), intensity=650.0),
+                pose=ceiling_light_pose,
+            )
 
-        # spot light to highlight centre
-        spot_pose = build_camera_pose(
-            np.array([centroid.x, centroid.y, wall_height - 0.05]),
-            np.array([centroid.x, centroid.y, wall_height * 0.2]),
-        )
-        scene.add(
-            pyrender.SpotLight(
-                color=np.ones(3) * 0.95,
-                intensity=1300.0,
-                innerConeAngle=np.deg2rad(18.0),
-                outerConeAngle=np.deg2rad(32.0),
-            ),
-            pose=spot_pose,
-        )
+            # spot light to highlight centre
+            spot_pose = build_camera_pose(
+                np.array([centroid.x, centroid.y, wall_height - 0.05]),
+                np.array([centroid.x, centroid.y, wall_height * 0.2]),
+            )
+            scene.add(
+                pyrender.SpotLight(
+                    color=np.ones(3) * 0.95,
+                    intensity=1300.0,
+                    innerConeAngle=np.deg2rad(18.0),
+                    outerConeAngle=np.deg2rad(32.0),
+                ),
+                pose=spot_pose,
+            )
 
-        # key directional light aligned with camera for readable shadows
-        key_origin = eye + np.array([0.0, 0.0, 1.0])
-        key_target = np.array([centroid.x, centroid.y, wall_height * 0.3])
-        key_pose = build_camera_pose(key_origin, key_target)
-        scene.add(
-            pyrender.DirectionalLight(color=np.ones(3) * 0.95, intensity=2.4),
-            pose=key_pose,
-        )
+            # key directional light aligned with camera for readable shadows
+            key_origin = eye + np.array([0.0, 0.0, 1.0])
+            key_target = np.array([centroid.x, centroid.y, wall_height * 0.3])
+            key_pose = build_camera_pose(key_origin, key_target)
+            scene.add(
+                pyrender.DirectionalLight(color=np.ones(3) * 0.95, intensity=2.4),
+                pose=key_pose,
+            )
 
-        # subtle rim light to avoid dark corners
-        rim_origin = np.array([centroid.x - 2.5, centroid.y - 1.5, wall_height + 1.0])
-        rim_target = np.array([centroid.x, centroid.y, wall_height * 0.5])
-        rim_pose = build_camera_pose(rim_origin, rim_target)
-        scene.add(
-            pyrender.DirectionalLight(color=np.array([0.8, 0.85, 1.0]), intensity=1.2),
-            pose=rim_pose,
-        )
+            # subtle rim light to avoid dark corners
+            rim_origin = np.array([centroid.x - 2.5, centroid.y - 1.5, wall_height + 1.0])
+            rim_target = np.array([centroid.x, centroid.y, wall_height * 0.5])
+            rim_pose = build_camera_pose(rim_origin, rim_target)
+            scene.add(
+                pyrender.DirectionalLight(color=np.array([0.8, 0.85, 1.0]), intensity=1.2),
+                pose=rim_pose,
+            )
 
-        color, _ = renderer.render(scene, flags=render_flags)
-        image = np.clip(color, 0, 255).astype(np.uint8)
+            color, _ = renderer.render(scene, flags=render_flags)
+            image = np.clip(color, 0, 255).astype(np.uint8)
 
             image_path = output_dir / f"{idx:02d}_{slug}_v{view_idx}.png"
             imageio.imwrite(image_path, image)
