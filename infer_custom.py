@@ -134,18 +134,39 @@ def export_polygons(output_path, polygons, types, room_polygons, room_types):
         if isinstance(poly, np.ndarray):
             return poly.tolist()
         try:
-            from shapely.geometry import Polygon, MultiPolygon
+            from shapely.geometry import Polygon, MultiPolygon, GeometryCollection
+
+            def polygon_coords(geom):
+                return [list(map(float, pt)) for pt in np.asarray(geom.exterior.coords)]
 
             if isinstance(poly, Polygon):
-                return [list(map(float, pt)) for pt in np.asarray(poly.exterior.coords)]
+                return polygon_coords(poly)
             if isinstance(poly, MultiPolygon):
-                return [
-                    [list(map(float, pt)) for pt in np.asarray(part.exterior.coords)]
-                    for part in poly.geoms
-                ]
+                return [polygon_coords(part) for part in poly.geoms]
+            if isinstance(poly, GeometryCollection):
+                polys = []
+                others = []
+                for part in poly.geoms:
+                    if isinstance(part, Polygon):
+                        polys.append(polygon_coords(part))
+                    elif isinstance(part, MultiPolygon):
+                        polys.extend([polygon_coords(p) for p in part.geoms])
+                    elif hasattr(part, "coords"):
+                        others.append([list(map(float, pt)) for pt in part.coords])
+                if polys:
+                    return polys if len(polys) > 1 else polys[0]
+                if others:
+                    return others if len(others) > 1 else others[0]
         except Exception:
             pass
-        return json.loads(json.dumps(poly, default=lambda o: o.tolist() if hasattr(o, "tolist") else list(o)))
+        if hasattr(poly, "tolist"):
+            return poly.tolist()
+        if hasattr(poly, "coords"):
+            return [list(map(float, pt)) for pt in poly.coords]
+        try:
+            return list(poly)
+        except TypeError:
+            return []
 
     payload = {
         "icons": [
