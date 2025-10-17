@@ -423,32 +423,23 @@ def main():
             args.height,
         )
 
-    meshes_to_merge = []
+    geometries = []
     if wall_mesh is not None:
-        meshes_to_merge.append(wall_mesh)
+        if args.smooth_walls:
+            wall_mesh.merge_vertices()
+            wall_mesh.remove_duplicate_faces()
+            wall_mesh.remove_degenerate_faces()
+            wall_mesh.remove_unreferenced_vertices()
+        geometries.append(("Walls", wall_mesh))
     if floor_mesh is not None:
-        meshes_to_merge.append(floor_mesh)
+        geometries.append(("Floor", floor_mesh))
     if ceiling_mesh is not None:
-        meshes_to_merge.append(ceiling_mesh)
-
-    if not meshes_to_merge:
-        raise RuntimeError("No geometry produced from SVG input.")
-
-    combined = trimesh.util.concatenate(meshes_to_merge)
-
+        geometries.append(("Ceiling", ceiling_mesh))
     if frame_mesh is not None:
-        combined = trimesh.util.concatenate([combined, frame_mesh])
+        geometries.append(("Frames", frame_mesh))
 
-    if args.invert_z:
-        z_min = combined.vertices[:, 2].min()
-        z_max = combined.vertices[:, 2].max()
-        combined.vertices[:, 2] = z_max - (combined.vertices[:, 2] - z_min)
-
-    if args.smooth_walls:
-        combined.merge_vertices()
-        combined.remove_duplicate_faces()
-        combined.remove_degenerate_faces()
-        combined.remove_unreferenced_vertices()
+    if not geometries:
+        raise RuntimeError("No geometry produced from SVG input.")
 
     rotation_x = trimesh.transformations.rotation_matrix(
         np.deg2rad(-90.0), [1.0, 0.0, 0.0]
@@ -456,10 +447,20 @@ def main():
     rotation_y = trimesh.transformations.rotation_matrix(
         np.deg2rad(180.0), [0.0, 1.0, 0.0]
     )
-    combined.apply_transform(rotation_y)
-    combined.apply_transform(rotation_x)
+    transform = trimesh.transformations.concatenate_matrices(rotation_y, rotation_x)
 
-    export_mesh(combined, args.output)
+    scene = trimesh.Scene()
+
+    for name, geom in geometries:
+        geom = geom.copy()
+        geom.apply_transform(transform)
+        if args.invert_z:
+            z_min = geom.vertices[:, 2].min()
+            z_max = geom.vertices[:, 2].max()
+            geom.vertices[:, 2] = z_max - (geom.vertices[:, 2] - z_min)
+        scene.add_geometry(geom, node_name=name, geom_name=name)
+
+    export_mesh(scene, args.output)
 
 
 if __name__ == "__main__":
