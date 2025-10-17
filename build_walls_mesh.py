@@ -450,10 +450,14 @@ def main():
         combined.remove_degenerate_faces()
         combined.remove_unreferenced_vertices()
 
-    rotation = trimesh.transformations.rotation_matrix(
+    rotation_x = trimesh.transformations.rotation_matrix(
         np.deg2rad(-90.0), [1.0, 0.0, 0.0]
     )
-    combined.apply_transform(rotation)
+    rotation_y = trimesh.transformations.rotation_matrix(
+        np.deg2rad(180.0), [0.0, 1.0, 0.0]
+    )
+    combined.apply_transform(rotation_y)
+    combined.apply_transform(rotation_x)
 
     export_mesh(combined, args.output)
 
