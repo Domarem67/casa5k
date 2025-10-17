@@ -336,9 +336,9 @@ def _evaluate_direction(
     norm = np.linalg.norm(direction)
     if norm < 1e-6:
         return None
+
     forward_dir = direction / norm
     perp_dir = np.array([-forward_dir[1], forward_dir[0]])
-
     extent = max(diag * 1.6, 3.5)
     line = geom.LineString(
         [
@@ -346,7 +346,6 @@ def _evaluate_direction(
             tuple(centroid_xy + forward_dir * extent),
         ]
     )
-
     segment = _longest_line_segment(polygon.intersection(line))
     if segment is None:
         return None
@@ -356,6 +355,7 @@ def _evaluate_direction(
     seg_len = np.linalg.norm(seg_vec)
     if seg_len < 1e-3:
         return None
+
     if np.dot(seg_vec, forward_dir) < 0.0:
         start, end = end, start
         seg_vec = end - start
@@ -363,91 +363,106 @@ def _evaluate_direction(
         if seg_len < 1e-3:
             return None
 
-    base_eye = float(np.clip(seg_len * 0.08, 0.2, 0.45))
-    offsets = [
-        base_eye,
-        base_eye * 0.7,
-        base_eye * 0.5,
-        max(seg_len * 0.06, 0.12),
-    ]
-
-    eye_xy = None
-    for off in offsets:
-        off = float(np.clip(off, seg_len * 0.04, seg_len * 0.42))
-        candidate = start + forward_dir * off
-        if _point_in_polygon(polygon, candidate):
-            eye_xy = candidate
-            break
-    if eye_xy is None:
-        return None
-
-    eye_offset = np.dot(eye_xy - start, forward_dir)
-    front_guard = float(np.clip(seg_len * 0.12, 0.18, 0.7))
-    target_min = max(eye_offset + seg_len * 0.35, eye_offset + 0.55)
-    target_max = seg_len - front_guard
-    if target_max <= target_min:
-        target_max = seg_len - max(front_guard * 0.5, 0.12)
-    if target_max <= eye_offset + 0.1:
-        target_max = seg_len - 0.08
-    if target_max <= eye_offset:
-        target_max = seg_len * 0.85
-
-    target_offset = min(max(target_min, eye_offset + 0.3), target_max)
-    target_offset = float(np.clip(target_offset, eye_offset + 0.15, seg_len - 0.05))
-    target_xy = start + forward_dir * target_offset
-
-    if not _point_in_polygon(polygon, target_xy):
-        adjust_vec = centroid_xy - target_xy
-        adjusted = False
-        for frac in (0.6, 0.45, 0.3):
-            candidate = target_xy + adjust_vec * frac
-            if _point_in_polygon(polygon, candidate):
-                target_xy = candidate
-                adjusted = True
-                break
-        if not adjusted:
+    eye_height = min(max(1.55, wall_height * 0.45), max(wall_height - 0.2, 1.8))
+    centroid_offset = np.dot(centroid_xy - start, forward_dir)
+    back_guard = float(np.clip(seg_len * 0.06, 0.18, 0.8))
+    front_guard = float(np.clip(seg_len * 0.08, 0.24, 0.9))
+    if seg_len <= back_guard + front_guard + 0.05:
+        back_guard = min(back_guard * 0.5, seg_len * 0.25)
+        front_guard = min(front_guard * 0.5, seg_len * 0.25)
+        if seg_len <= back_guard + front_guard + 0.05:
             return None
 
-    target_depth = np.dot(target_xy - eye_xy, forward_dir)
-    if target_depth <= 0.12:
-        return None
+    sample_count = 7 if seg_len > 2.2 else 5
+    eye_offsets = np.linspace(back_guard, seg_len - front_guard, sample_count)
 
-    sample_count = max(int(seg_len * 18), 48)
-    boundary_pts = _sample_polygon_points(polygon, sample_count)
+    boundary_pts = _sample_polygon_points(polygon, max(int(seg_len * 18), 48))
     if not boundary_pts:
         boundary_pts = [np.array([x, y], dtype=float) for x, y in polygon.exterior.coords[:-1]]
 
-    max_angle = 0.0
-    min_depth = float("inf")
-    for point in boundary_pts:
-        vec = point - eye_xy
-        depth = np.dot(vec, forward_dir)
-        if depth <= 1e-3:
-            return None
-        perp = np.dot(vec, perp_dir)
-        angle = math.atan2(abs(perp), depth)
-        if angle > max_angle:
-            max_angle = angle
-        if depth < min_depth:
-            min_depth = depth
+    best = None
+    horizontal_half = horizontal_fov / 2.0
+    vertical_half = vertical_fov / 2.0
+    min_forward_gap = max(seg_len * 0.18, 0.35)
 
-    horizontal_margin = horizontal_fov / 2.0 - max_angle
+    for eye_offset in eye_offsets:
+        eye_xy = start + forward_dir * eye_offset
+        if not _point_in_polygon(polygon, eye_xy):
+            continue
 
-    eye_height = min(max(1.55, wall_height * 0.45), max(wall_height - 0.2, 1.8))
-    floor_angle = math.atan2(eye_height, target_depth)
-    ceiling_angle = math.atan2(max(wall_height - eye_height, 0.1), target_depth)
-    vertical_margin = vertical_fov / 2.0 - max(floor_angle, ceiling_angle)
+        preferred_target = centroid_offset
+        if not math.isfinite(preferred_target):
+            preferred_target = eye_offset + min_forward_gap
 
-    score = horizontal_margin + 0.05 * min_depth + 0.15 * max(vertical_margin, -1.5)
-    return {
-        "eye_xy": eye_xy,
-        "target_xy": target_xy,
-        "forward_dir": forward_dir,
-        "horizontal_margin": horizontal_margin,
-        "vertical_margin": vertical_margin,
-        "min_depth": min_depth,
-        "score": score,
-    }
+        min_target = eye_offset + min_forward_gap
+        min_target = float(np.clip(min_target, eye_offset + 0.25, seg_len - front_guard * 0.5))
+        max_target = float(max(seg_len - front_guard * 0.5, eye_offset + 0.35))
+        if max_target <= min_target:
+            max_target = min_target + max(0.18, seg_len * 0.1)
+
+        target_offset = float(np.clip(preferred_target, min_target, max_target))
+        target_xy = start + forward_dir * target_offset
+        if not _point_in_polygon(polygon, target_xy):
+            adjust_vec = centroid_xy - target_xy
+            adjusted = False
+            for frac in (0.7, 0.55, 0.4, 0.25):
+                candidate = target_xy + adjust_vec * frac
+                if _point_in_polygon(polygon, candidate):
+                    target_xy = candidate
+                    target_offset = np.dot(target_xy - start, forward_dir)
+                    adjusted = True
+                    break
+            if not adjusted:
+                continue
+
+        target_depth = np.dot(target_xy - eye_xy, forward_dir)
+        if target_depth <= 0.1:
+            continue
+
+        max_angle = 0.0
+        min_depth = float("inf")
+        for point in boundary_pts:
+            vec = point - eye_xy
+            depth = np.dot(vec, forward_dir)
+            if depth <= 1e-3:
+                max_angle = horizontal_half + 1.0
+                break
+            perp = np.dot(vec, perp_dir)
+            angle = math.atan2(abs(perp), depth)
+            if angle > max_angle:
+                max_angle = angle
+            if depth < min_depth:
+                min_depth = depth
+
+        if max_angle >= horizontal_half * 1.05:
+            continue
+
+        horizontal_margin = horizontal_half - max_angle
+        if horizontal_margin <= -0.02:
+            continue
+
+        floor_angle = math.atan2(eye_height, min_depth)
+        ceiling_angle = math.atan2(max(wall_height - eye_height, 0.1), min_depth)
+        vertical_margin = vertical_half - max(floor_angle, ceiling_angle)
+
+        score = (
+            horizontal_margin * 0.75
+            + max(vertical_margin, -1.2) * 0.2
+            + min_depth * 0.02
+            + target_depth * 0.01
+        )
+        if best is None or score > best["score"]:
+            best = {
+                "eye_xy": eye_xy,
+                "target_xy": target_xy,
+                "forward_dir": forward_dir,
+                "horizontal_margin": horizontal_margin,
+                "vertical_margin": vertical_margin,
+                "min_depth": min_depth,
+                "score": score,
+            }
+
+    return best
 
 
 def _find_interior_point(polygon: geom.Polygon, centroid_xy: np.ndarray, direction: np.ndarray, distance: float):
