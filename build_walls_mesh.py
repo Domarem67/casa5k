@@ -3,6 +3,7 @@ import re
 import xml.etree.ElementTree as ET
 from pathlib import Path
 
+import numpy as np
 import shapely.affinity as affinity
 import shapely.geometry as geom
 import shapely.ops as ops
@@ -302,8 +303,8 @@ def main():
     parser.add_argument(
         "--door-frame-depth",
         type=float,
-        default=0.05,
-        help="Thickness of the door frame (meters). Set to 0 to skip.",
+        default=0.0,
+        help="Thickness of the door frame (meters). Frames are disabled by default.",
     )
     parser.add_argument(
         "--floor-thickness",
@@ -448,6 +449,11 @@ def main():
         combined.remove_duplicate_faces()
         combined.remove_degenerate_faces()
         combined.remove_unreferenced_vertices()
+
+    rotation = trimesh.transformations.rotation_matrix(
+        np.deg2rad(-90.0), [1.0, 0.0, 0.0]
+    )
+    combined.apply_transform(rotation)
 
     export_mesh(combined, args.output)
 
