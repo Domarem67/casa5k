@@ -488,22 +488,23 @@ def main():
             else:
                 hinge_point_xy = hinge_points.mean(axis=0)
 
-            door_center = hinge_point_xy + walkway_dir * (door_width * 0.5) + wall_normal_dir * (door_thickness * 0.5)
+            hinge_pos_xy = hinge_point_xy + wall_normal_dir * (door_thickness * 0.5)
+            door_center_xy = hinge_pos_xy + walkway_dir * (door_width * 0.5)
 
             orientation = np.eye(4)
             orientation[:3, 0] = np.array([walkway_dir[0], walkway_dir[1], 0.0])
             orientation[:3, 1] = np.array([wall_normal_dir[0], wall_normal_dir[1], 0.0])
             orientation[:3, 2] = np.array([0.0, 0.0, 1.0])
             orientation[:3, 3] = np.array([
-                door_center[0],
-                door_center[1],
+                door_center_xy[0],
+                door_center_xy[1],
                 door_height * 0.5,
             ])
             door_box.apply_transform(orientation)
 
             hinge_point = np.array([
-                hinge_point_xy[0] + wall_normal_dir[0] * (door_thickness * 0.5),
-                hinge_point_xy[1] + wall_normal_dir[1] * (door_thickness * 0.5),
+                hinge_pos_xy[0],
+                hinge_pos_xy[1],
                 door_height * 0.5,
             ])
             rotation = trimesh.transformations.rotation_matrix(angle_rad, [0.0, 0.0, 1.0], hinge_point)
