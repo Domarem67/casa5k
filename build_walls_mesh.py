@@ -463,37 +463,48 @@ def main():
             width_dir, depth_dir, width_len, depth_len, center_px = axes
 
             walkway_dir = width_dir
-            walkway_span = width_len
             wall_normal_dir = depth_dir
-            wall_thickness_world = max(depth_len * scale_factor, panel_thickness * 1.5)
 
-            center = np.array([center_px[0] * scale_factor, center_px[1] * scale_factor, 0.0])
-            door_width = max(walkway_span * scale_factor * 0.97, 0.6)
-            door_thickness = min(max(panel_thickness, wall_thickness_world * 0.6), wall_thickness_world * 0.95)
+            coords_world = np.asarray(door.exterior.coords[:-1], dtype=float) * scale_factor
+            if coords_world.shape[0] < 2:
+                continue
+            proj_walk = coords_world @ walkway_dir
+            proj_normal = coords_world @ wall_normal_dir
+            min_walk = proj_walk.min()
+            max_walk = proj_walk.max()
+            min_normal = proj_normal.min()
+            max_normal = proj_normal.max()
+            door_width = max(max_walk - min_walk, 0.55)
+            wall_thickness_world = max(max_normal - min_normal, panel_thickness * 1.5)
+            door_thickness = min(max(panel_thickness, wall_thickness_world * 0.65), wall_thickness_world * 0.95)
             door_height = min(args.door_height, args.height * 0.97)
 
             door_box = tm_creation.box(extents=[door_width, door_thickness, door_height])
+
+            hinge_mask = np.isclose(proj_walk, min_walk, atol=max(scale_factor * 0.5, 0.01))
+            hinge_points = coords_world[hinge_mask]
+            if hinge_points.size == 0:
+                hinge_point_xy = (coords_world[proj_walk.argmin()])
+            else:
+                hinge_point_xy = hinge_points.mean(axis=0)
+
+            center_line = hinge_point_xy + walkway_dir * (door_width * 0.5) + wall_normal_dir * (door_thickness * 0.5)
 
             orientation = np.eye(4)
             orientation[:3, 0] = np.array([walkway_dir[0], walkway_dir[1], 0.0])
             orientation[:3, 1] = np.array([wall_normal_dir[0], wall_normal_dir[1], 0.0])
             orientation[:3, 2] = np.array([0.0, 0.0, 1.0])
-            inset = -wall_thickness_world * 0.5 + door_thickness * 0.5
-            orientation[:3, 3] = center + np.array([
-                wall_normal_dir[0] * inset,
-                wall_normal_dir[1] * inset,
+            orientation[:3, 3] = np.array([
+                center_line[0],
+                center_line[1],
                 door_height * 0.5,
             ])
             door_box.apply_transform(orientation)
 
-            hinge_point = center + np.array([
-                wall_normal_dir[0] * inset,
-                wall_normal_dir[1] * inset,
+            hinge_point = np.array([
+                center_line[0] - wall_normal_dir[0] * (door_thickness * 0.5),
+                center_line[1] - wall_normal_dir[1] * (door_thickness * 0.5),
                 door_height * 0.5,
-            ]) + np.array([
-                walkway_dir[0] * (-0.5 * door_width),
-                walkway_dir[1] * (-0.5 * door_width),
-                0.0,
             ])
             rotation = trimesh.transformations.rotation_matrix(angle_rad, [0.0, 0.0, 1.0], hinge_point)
             door_box.apply_transform(rotation)
