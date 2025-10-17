@@ -136,8 +136,8 @@ def main():
     parser.add_argument(
         "--door-frame-depth",
         type=float,
-        default=0.05,
-        help="Door frame thickness (0 to skip).",
+        default=0.0,
+        help="Door frame thickness (0 disables frames).",
     )
     parser.add_argument(
         "--floor-thickness",
