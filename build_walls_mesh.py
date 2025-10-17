@@ -462,21 +462,39 @@ def main():
                 continue
             width_dir, depth_dir, width_len, depth_len, center_px = axes
 
+            walkway_dir = width_dir
+            walkway_span = width_len
+            wall_normal_dir = depth_dir
+            wall_thickness_world = max(depth_len * scale_factor, panel_thickness * 1.5)
+
             center = np.array([center_px[0] * scale_factor, center_px[1] * scale_factor, 0.0])
-            door_width = max(width_len * scale_factor * 0.98, 0.55)
-            door_thickness = max(panel_thickness, depth_len * scale_factor * 0.35)
+            door_width = max(walkway_span * scale_factor * 0.97, 0.6)
+            door_thickness = min(max(panel_thickness, wall_thickness_world * 0.6), wall_thickness_world * 0.95)
             door_height = min(args.door_height, args.height * 0.97)
 
             door_box = tm_creation.box(extents=[door_width, door_thickness, door_height])
 
             orientation = np.eye(4)
-            orientation[:3, 0] = np.array([width_dir[0], width_dir[1], 0.0])
-            orientation[:3, 1] = np.array([depth_dir[0], depth_dir[1], 0.0])
+            orientation[:3, 0] = np.array([walkway_dir[0], walkway_dir[1], 0.0])
+            orientation[:3, 1] = np.array([wall_normal_dir[0], wall_normal_dir[1], 0.0])
             orientation[:3, 2] = np.array([0.0, 0.0, 1.0])
-            orientation[:3, 3] = center + np.array([0.0, 0.0, door_height * 0.5])
+            inset = -wall_thickness_world * 0.5 + door_thickness * 0.5
+            orientation[:3, 3] = center + np.array([
+                wall_normal_dir[0] * inset,
+                wall_normal_dir[1] * inset,
+                door_height * 0.5,
+            ])
             door_box.apply_transform(orientation)
 
-            hinge_point = center + np.array([-0.5 * door_width * width_dir[0], -0.5 * door_width * width_dir[1], door_height * 0.5])
+            hinge_point = center + np.array([
+                wall_normal_dir[0] * inset,
+                wall_normal_dir[1] * inset,
+                door_height * 0.5,
+            ]) + np.array([
+                walkway_dir[0] * (-0.5 * door_width),
+                walkway_dir[1] * (-0.5 * door_width),
+                0.0,
+            ])
             rotation = trimesh.transformations.rotation_matrix(angle_rad, [0.0, 0.0, 1.0], hinge_point)
             door_box.apply_transform(rotation)
 
