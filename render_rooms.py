@@ -3,6 +3,7 @@ import json
 import math
 import os
 from pathlib import Path
+from typing import List
 
 import imageio
 import numpy as np
@@ -21,6 +22,9 @@ def resolve_camera_pose(
     vertical_fov: float = math.radians(70.0),
     aspect_ratio: float = 16.0 / 9.0,
 ):
+    corner_based = _resolve_camera_pose_corners(polygon, wall_height, vertical_fov, aspect_ratio)
+    if corner_based is not None:
+        return corner_based
     adaptive = _resolve_camera_pose_adaptive(polygon, wall_height, vertical_fov, aspect_ratio)
     if adaptive is not None:
         return adaptive
@@ -149,6 +153,137 @@ def _resolve_camera_pose_basic(polygon: geom.Polygon, wall_height: float):
     return eye, target
 
 
+def _resolve_camera_pose_corners(
+    polygon: geom.Polygon,
+    wall_height: float,
+    vertical_fov: float,
+    aspect_ratio: float,
+):
+    if polygon is None or polygon.is_empty:
+        return None
+
+    try:
+        oriented = geom.polygon.orient(polygon, sign=1.0)
+    except AttributeError:
+        oriented = polygon
+    coords = np.asarray(oriented.exterior.coords[:-1], dtype=float)
+    if coords.ndim != 2 or coords.shape[0] < 3:
+        return None
+
+    representative = oriented.representative_point()
+    centroid_xy = np.array([representative.x, representative.y], dtype=float)
+
+    minx, miny, maxx, maxy = oriented.bounds
+    diag = np.linalg.norm([maxx - minx, maxy - miny])
+    if not math.isfinite(diag) or diag <= 0.0:
+        diag = max(maxx - minx, maxy - miny, 1.0)
+
+    horizontal_fov = 2.0 * math.atan(math.tan(vertical_fov / 2.0) * aspect_ratio)
+    horizontal_fov = float(np.clip(horizontal_fov, math.radians(30.0), math.radians(140.0)))
+    boundary_pts = _sample_polygon_points(oriented, max(int(diag * 14), 64))
+    if not boundary_pts:
+        boundary_pts = [np.array([x, y], dtype=float) for x, y in coords]
+
+    best = None
+    for idx in range(coords.shape[0]):
+        prev = coords[(idx - 1) % coords.shape[0]]
+        current = coords[idx]
+        nxt = coords[(idx + 1) % coords.shape[0]]
+
+        v_prev = prev - current
+        v_next = nxt - current
+        len_prev = np.linalg.norm(v_prev)
+        len_next = np.linalg.norm(v_next)
+        if len_prev < 1e-4 or len_next < 1e-4:
+            continue
+
+        unit_prev = v_prev / len_prev
+        unit_next = v_next / len_next
+        bisector = -(unit_prev + unit_next)
+        norm_bisector = np.linalg.norm(bisector)
+        if norm_bisector < 1e-6:
+            continue
+        bisector /= norm_bisector
+
+        probe = current + bisector * min(diag * 0.015, 0.12)
+        if not _point_in_polygon(oriented, probe):
+            bisector = -bisector
+            probe = current + bisector * min(diag * 0.015, 0.12)
+            if not _point_in_polygon(oriented, probe):
+                continue
+
+        initial = current + bisector * min(diag * 0.02, 0.18)
+        if not _point_in_polygon(oriented, initial):
+            initial = current + bisector * min(diag * 0.008, 0.08)
+        if not _point_in_polygon(oriented, initial):
+            continue
+
+        max_forward = _ray_polygon_distance(oriented, initial, bisector, diag * 3.0)
+        if max_forward is None or max_forward <= 0.25:
+            continue
+
+        eye_offset = float(np.clip(max_forward * 0.3, diag * 0.08, diag * 0.5))
+        eye_xy = initial + bisector * min(eye_offset, max_forward * 0.85)
+        if not _point_in_polygon(oriented, eye_xy):
+            continue
+
+        direction_to_center = centroid_xy - eye_xy
+        if np.linalg.norm(direction_to_center) < 1e-4:
+            forward_dir = bisector
+        else:
+            forward_dir = direction_to_center / np.linalg.norm(direction_to_center)
+
+        forward_dist = _ray_polygon_distance(oriented, eye_xy, forward_dir, diag * 3.5)
+        if forward_dist is None or forward_dist <= 0.3:
+            forward_dir = bisector
+            forward_dist = _ray_polygon_distance(oriented, eye_xy, forward_dir, diag * 3.0)
+            if forward_dist is None or forward_dist <= 0.3:
+                continue
+
+        target_depth = min(forward_dist * 0.72, max(forward_dist - 0.25, 0.75))
+        if target_depth <= 0.25:
+            target_depth = max(forward_dist * 0.55, 0.65)
+        target_xy = eye_xy + forward_dir * target_depth
+        if not _point_in_polygon(oriented, target_xy):
+            adjust_vec = centroid_xy - target_xy
+            adjusted = False
+            for frac in (0.7, 0.5, 0.35):
+                candidate = target_xy + adjust_vec * frac
+                if _point_in_polygon(oriented, candidate):
+                    target_xy = candidate
+                    adjusted = True
+                    break
+            if not adjusted:
+                continue
+
+        candidate = _score_camera_candidate(
+            oriented,
+            eye_xy,
+            target_xy,
+            wall_height,
+            vertical_fov,
+            horizontal_fov,
+            boundary_pts,
+        )
+        if candidate is None:
+            continue
+        if best is None or candidate["score"] > best["score"]:
+            candidate["eye_xy"] = eye_xy
+            candidate["target_xy"] = target_xy
+            best = candidate
+
+    if best is None:
+        return None
+
+    eye_height = min(max(1.5, wall_height * 0.45), max(wall_height - 0.2, 1.75))
+    target_z = min(wall_height * 0.52, eye_height - 0.18)
+    if target_z < 0.65:
+        target_z = 0.65
+    eye = np.array([best["eye_xy"][0], best["eye_xy"][1], eye_height])
+    target = np.array([best["target_xy"][0], best["target_xy"][1], target_z])
+    return eye, target
+
+
 def build_camera_pose(eye, target):
     forward = target - eye
     norm = np.linalg.norm(forward)
@@ -268,6 +403,63 @@ def _polygon_direction_candidates(polygon: geom.Polygon, coords: np.ndarray, cen
 def _point_in_polygon(polygon: geom.Polygon, xy: np.ndarray):
     point = geom.Point(float(xy[0]), float(xy[1]))
     return polygon.contains(point) or polygon.touches(point)
+
+
+def _score_camera_candidate(
+    polygon: geom.Polygon,
+    eye_xy: np.ndarray,
+    target_xy: np.ndarray,
+    wall_height: float,
+    vertical_fov: float,
+    horizontal_fov: float,
+    boundary_pts: List[np.ndarray],
+):
+    forward = target_xy - eye_xy
+    norm = np.linalg.norm(forward)
+    if norm < 1e-6:
+        return None
+    forward /= norm
+    perp_dir = np.array([-forward[1], forward[0]])
+
+    horizontal_half = horizontal_fov / 2.0
+    vertical_half = vertical_fov / 2.0
+
+    max_angle = 0.0
+    min_depth = float("inf")
+    for point in boundary_pts:
+        vec = point - eye_xy
+        depth = np.dot(vec, forward)
+        if depth <= 1e-3:
+            return None
+        perp = np.dot(vec, perp_dir)
+        angle = math.atan2(abs(perp), depth)
+        if angle > max_angle:
+            max_angle = angle
+        if depth < min_depth:
+            min_depth = depth
+
+    if max_angle >= horizontal_half * 1.02:
+        return None
+    horizontal_margin = horizontal_half - max_angle
+    if horizontal_margin <= -0.03:
+        return None
+
+    eye_height = min(max(1.5, wall_height * 0.45), max(wall_height - 0.2, 1.75))
+    floor_angle = math.atan2(eye_height, min_depth)
+    ceiling_angle = math.atan2(max(wall_height - eye_height, 0.1), min_depth)
+    vertical_margin = vertical_half - max(floor_angle, ceiling_angle)
+
+    score = (
+        horizontal_margin * 0.85
+        + max(vertical_margin, -1.0) * 0.18
+        + min_depth * 0.025
+    )
+    return {
+        "horizontal_margin": horizontal_margin,
+        "vertical_margin": vertical_margin,
+        "min_depth": min_depth,
+        "score": score,
+    }
 
 
 def _longest_line_segment(geometry_obj):
