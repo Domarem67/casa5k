@@ -1,5 +1,6 @@
 import argparse
 import json
+import math
 import os
 from pathlib import Path
 
@@ -14,7 +15,90 @@ import shapely.geometry as geom  # noqa: E402
 import trimesh  # noqa: E402
 
 
-def resolve_camera_pose(polygon: geom.Polygon, wall_height: float):
+def resolve_camera_pose(
+    polygon: geom.Polygon,
+    wall_height: float,
+    vertical_fov: float = math.radians(70.0),
+    aspect_ratio: float = 16.0 / 9.0,
+):
+    adaptive = _resolve_camera_pose_adaptive(polygon, wall_height, vertical_fov, aspect_ratio)
+    if adaptive is not None:
+        return adaptive
+    return _resolve_camera_pose_basic(polygon, wall_height)
+
+
+def _resolve_camera_pose_adaptive(
+    polygon: geom.Polygon,
+    wall_height: float,
+    vertical_fov: float,
+    aspect_ratio: float,
+):
+    if polygon is None or polygon.is_empty:
+        return None
+
+    representative = polygon.representative_point()
+    centroid_xy = np.array([representative.x, representative.y], dtype=float)
+
+    try:
+        coords = np.array(polygon.exterior.coords[:-1], dtype=float)
+    except (AttributeError, TypeError, ValueError):
+        return None
+
+    if coords.size == 0:
+        return None
+
+    minx, miny, maxx, maxy = polygon.bounds
+    diag = np.linalg.norm([maxx - minx, maxy - miny])
+    if not math.isfinite(diag) or diag <= 0.0:
+        diag = max(maxx - minx, maxy - miny, 1.0)
+
+    horizontal_fov = 2.0 * math.atan(math.tan(vertical_fov / 2.0) * aspect_ratio)
+    horizontal_fov = float(np.clip(horizontal_fov, math.radians(30.0), math.radians(140.0)))
+
+    best = None
+    candidate_dirs = _polygon_direction_candidates(polygon, coords, centroid_xy)
+    for direction in candidate_dirs:
+        evaluation = _evaluate_direction(
+            polygon,
+            coords,
+            centroid_xy,
+            direction,
+            diag,
+            wall_height,
+            vertical_fov,
+            horizontal_fov,
+        )
+        if evaluation is None:
+            continue
+        if best is None or evaluation["score"] > best["score"]:
+            best = evaluation
+
+    if best is None:
+        return None
+
+    eye_xy = best["eye_xy"]
+    target_xy = best["target_xy"]
+    forward_dir = best["forward_dir"]
+
+    eye_height = min(max(1.55, wall_height * 0.45), max(wall_height - 0.2, 1.8))
+    target_depth = np.dot(target_xy - eye_xy, forward_dir)
+    vertical_focus = max(target_depth, 0.4)
+    floor_angle = math.atan2(eye_height, vertical_focus)
+    ceiling_angle = math.atan2(max(wall_height - eye_height, 0.1), vertical_focus)
+    max_vertical_span = max(floor_angle, ceiling_angle)
+    if vertical_fov < 2.0 * max_vertical_span:
+        eye_height = min(max(1.35, wall_height * 0.35), max(wall_height - 0.25, 1.65))
+
+    target_z = min(wall_height * 0.55, eye_height - 0.18)
+    if target_z < 0.65:
+        target_z = 0.65
+
+    eye = np.array([eye_xy[0], eye_xy[1], eye_height])
+    target = np.array([target_xy[0], target_xy[1], target_z])
+    return eye, target
+
+
+def _resolve_camera_pose_basic(polygon: geom.Polygon, wall_height: float):
     representative = polygon.representative_point()
     centroid_xy = np.array([representative.x, representative.y], dtype=float)
     coords = np.array(polygon.exterior.coords[:-1], dtype=float)
@@ -160,6 +244,212 @@ def _candidate_directions(coords: np.ndarray, centroid_xy: np.ndarray):
     return _unique_directions(unique + [perp])
 
 
+def _polygon_direction_candidates(polygon: geom.Polygon, coords: np.ndarray, centroid_xy: np.ndarray):
+    candidates = list(_candidate_directions(coords, centroid_xy))
+    try:
+        oriented = polygon.minimum_rotated_rectangle
+    except (AttributeError, ValueError):
+        oriented = None
+    if isinstance(oriented, geom.Polygon):
+        rect_coords = np.asarray(oriented.exterior.coords[:-1], dtype=float)
+        if rect_coords.ndim == 2 and rect_coords.shape[0] >= 2:
+            for idx in range(rect_coords.shape[0]):
+                current = rect_coords[idx]
+                nxt = rect_coords[(idx + 1) % rect_coords.shape[0]]
+                edge = nxt - current
+                if np.linalg.norm(edge) < 1e-6:
+                    continue
+                candidates.append(edge)
+                candidates.append(np.array([-edge[1], edge[0]], dtype=float))
+    unique = _unique_directions(candidates)
+    return unique if unique else [np.array([1.0, 0.0], dtype=float)]
+
+
+def _point_in_polygon(polygon: geom.Polygon, xy: np.ndarray):
+    point = geom.Point(float(xy[0]), float(xy[1]))
+    return polygon.contains(point) or polygon.touches(point)
+
+
+def _longest_line_segment(geometry_obj):
+    segments = []
+
+    def _collect(item):
+        if item.is_empty:
+            return
+        if isinstance(item, geom.LineString):
+            coords = np.asarray(item.coords, dtype=float)
+            if coords.ndim == 2 and coords.shape[0] >= 2:
+                segments.append((coords[0], coords[-1]))
+        elif isinstance(item, geom.MultiLineString):
+            for part in item.geoms:
+                _collect(part)
+        elif isinstance(item, geom.GeometryCollection):
+            for part in item.geoms:
+                _collect(part)
+
+    _collect(geometry_obj)
+    if not segments:
+        return None
+
+    lengths = [np.linalg.norm(end - start) for start, end in segments]
+    best_idx = int(np.argmax(lengths))
+    start, end = segments[best_idx]
+    return np.array(start, dtype=float), np.array(end, dtype=float)
+
+
+def _sample_polygon_points(polygon: geom.Polygon, target_count: int):
+    points = []
+    try:
+        exterior_coords = list(polygon.exterior.coords)
+    except AttributeError:
+        return points
+
+    for x, y in exterior_coords[:-1]:
+        points.append(np.array([x, y], dtype=float))
+
+    if target_count > 0:
+        length = polygon.exterior.length
+        if length > 1e-6:
+            distances = np.linspace(0.0, length, num=target_count, endpoint=False)
+            for dist in distances:
+                pt = polygon.exterior.interpolate(dist)
+                points.append(np.array([pt.x, pt.y], dtype=float))
+
+    for interior in polygon.interiors:
+        interior_coords = list(interior.coords)
+        for x, y in interior_coords[:-1]:
+            points.append(np.array([x, y], dtype=float))
+
+    return points
+
+
+def _evaluate_direction(
+    polygon: geom.Polygon,
+    coords: np.ndarray,
+    centroid_xy: np.ndarray,
+    direction: np.ndarray,
+    diag: float,
+    wall_height: float,
+    vertical_fov: float,
+    horizontal_fov: float,
+):
+    norm = np.linalg.norm(direction)
+    if norm < 1e-6:
+        return None
+    forward_dir = direction / norm
+    perp_dir = np.array([-forward_dir[1], forward_dir[0]])
+
+    extent = max(diag * 1.6, 3.5)
+    line = geom.LineString(
+        [
+            tuple(centroid_xy - forward_dir * extent),
+            tuple(centroid_xy + forward_dir * extent),
+        ]
+    )
+
+    segment = _longest_line_segment(polygon.intersection(line))
+    if segment is None:
+        return None
+
+    start, end = segment
+    seg_vec = end - start
+    seg_len = np.linalg.norm(seg_vec)
+    if seg_len < 1e-3:
+        return None
+    if np.dot(seg_vec, forward_dir) < 0.0:
+        start, end = end, start
+        seg_vec = end - start
+        seg_len = np.linalg.norm(seg_vec)
+        if seg_len < 1e-3:
+            return None
+
+    base_eye = float(np.clip(seg_len * 0.08, 0.2, 0.45))
+    offsets = [
+        base_eye,
+        base_eye * 0.7,
+        base_eye * 0.5,
+        max(seg_len * 0.06, 0.12),
+    ]
+
+    eye_xy = None
+    for off in offsets:
+        off = float(np.clip(off, seg_len * 0.04, seg_len * 0.42))
+        candidate = start + forward_dir * off
+        if _point_in_polygon(polygon, candidate):
+            eye_xy = candidate
+            break
+    if eye_xy is None:
+        return None
+
+    eye_offset = np.dot(eye_xy - start, forward_dir)
+    front_guard = float(np.clip(seg_len * 0.12, 0.18, 0.7))
+    target_min = max(eye_offset + seg_len * 0.35, eye_offset + 0.55)
+    target_max = seg_len - front_guard
+    if target_max <= target_min:
+        target_max = seg_len - max(front_guard * 0.5, 0.12)
+    if target_max <= eye_offset + 0.1:
+        target_max = seg_len - 0.08
+    if target_max <= eye_offset:
+        target_max = seg_len * 0.85
+
+    target_offset = min(max(target_min, eye_offset + 0.3), target_max)
+    target_offset = float(np.clip(target_offset, eye_offset + 0.15, seg_len - 0.05))
+    target_xy = start + forward_dir * target_offset
+
+    if not _point_in_polygon(polygon, target_xy):
+        adjust_vec = centroid_xy - target_xy
+        adjusted = False
+        for frac in (0.6, 0.45, 0.3):
+            candidate = target_xy + adjust_vec * frac
+            if _point_in_polygon(polygon, candidate):
+                target_xy = candidate
+                adjusted = True
+                break
+        if not adjusted:
+            return None
+
+    target_depth = np.dot(target_xy - eye_xy, forward_dir)
+    if target_depth <= 0.12:
+        return None
+
+    sample_count = max(int(seg_len * 18), 48)
+    boundary_pts = _sample_polygon_points(polygon, sample_count)
+    if not boundary_pts:
+        boundary_pts = [np.array([x, y], dtype=float) for x, y in polygon.exterior.coords[:-1]]
+
+    max_angle = 0.0
+    min_depth = float("inf")
+    for point in boundary_pts:
+        vec = point - eye_xy
+        depth = np.dot(vec, forward_dir)
+        if depth <= 1e-3:
+            return None
+        perp = np.dot(vec, perp_dir)
+        angle = math.atan2(abs(perp), depth)
+        if angle > max_angle:
+            max_angle = angle
+        if depth < min_depth:
+            min_depth = depth
+
+    horizontal_margin = horizontal_fov / 2.0 - max_angle
+
+    eye_height = min(max(1.55, wall_height * 0.45), max(wall_height - 0.2, 1.8))
+    floor_angle = math.atan2(eye_height, target_depth)
+    ceiling_angle = math.atan2(max(wall_height - eye_height, 0.1), target_depth)
+    vertical_margin = vertical_fov / 2.0 - max(floor_angle, ceiling_angle)
+
+    score = horizontal_margin + 0.05 * min_depth + 0.15 * max(vertical_margin, -1.5)
+    return {
+        "eye_xy": eye_xy,
+        "target_xy": target_xy,
+        "forward_dir": forward_dir,
+        "horizontal_margin": horizontal_margin,
+        "vertical_margin": vertical_margin,
+        "min_depth": min_depth,
+        "score": score,
+    }
+
+
 def _find_interior_point(polygon: geom.Polygon, centroid_xy: np.ndarray, direction: np.ndarray, distance: float):
     for scale in np.linspace(1.0, 0.1, 8):
         candidate = centroid_xy - direction * (distance * scale)
@@ -296,13 +586,15 @@ def render_room_views(mesh_path: Path, polygons_path: Path, output_dir: Path, sc
     fill_node = scene.add(fill_light, pose=np.eye(4))
 
     render_flags = pyrender.RenderFlags.RGBA | pyrender.RenderFlags.SKIP_CULL_FACES
+    vertical_fov = float(camera.yfov)
+    aspect_ratio = float(width) / float(height)
 
     for idx, room in enumerate(rooms):
         polygon = build_room_polygon(room.get("points"), scale)
         if polygon is None or polygon.area <= 1e-6:
             continue
 
-        eye, target = resolve_camera_pose(polygon, wall_height)
+        eye, target = resolve_camera_pose(polygon, wall_height, vertical_fov, aspect_ratio)
         camera_pose = build_camera_pose(eye, target)
 
         scene.set_pose(camera_node, camera_pose)
