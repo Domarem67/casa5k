@@ -1,9 +1,11 @@
 import argparse
+import base64
 import json
 import math
 from pathlib import Path
 from typing import Iterable, List, Tuple
 
+import imageio.v2 as imageio
 import numpy as np
 import shapely.geometry as geom
 
@@ -30,6 +32,8 @@ def parse_args():
     parser.add_argument("--padding", type=float, default=50.0, help="Extra padding around drawing bounds in SVG units.")
     parser.add_argument("--min-fov-depth", type=float, default=1.0, help="Minimum distance (in SVG units) to extend FOV cones.")
     parser.add_argument("--vertical-fov-deg", type=float, default=70.0, help="Vertical field of view (degrees) used by the renderer.")
+    parser.add_argument("--plan-image", type=Path, help="Optional path to the original plan image to display as background.")
+    parser.add_argument("--plan-scale", type=float, help="Scale (units per pixel) for the original plan image; defaults to --scale.")
     return parser.parse_args()
 
 
@@ -75,6 +79,7 @@ def create_svg_root(minx: float, miny: float, maxx: float, maxy: float, padding:
     height = maxy - miny + 2.0 * padding
     attrs = {
         "xmlns": "http://www.w3.org/2000/svg",
+        "xmlns:xlink": "http://www.w3.org/1999/xlink",
         "version": "1.1",
         "width": f"{width:.1f}",
         "height": f"{height:.1f}",
@@ -194,6 +199,60 @@ def main():
     )
     svg_root["children"].append(background)
 
+    if args.plan_image:
+        if not args.plan_image.exists():
+            raise FileNotFoundError(f"Plan image '{args.plan_image}' not found.")
+        img = imageio.imread(args.plan_image)
+        if img.ndim < 2:
+            raise ValueError("Plan image must have 2 dimensions.")
+        img_h, img_w = img.shape[0], img.shape[1]
+        plan_scale = args.plan_scale if args.plan_scale is not None else args.scale
+        width_units = img_w * plan_scale
+        height_units = img_h * plan_scale
+        img_data = base64.b64encode(args.plan_image.read_bytes()).decode("ascii")
+        image_element = Element(
+            "image",
+            {
+                "x": "0",
+                "y": "0",
+                "width": f"{width_units:.3f}",
+                "height": f"{height_units:.3f}",
+                "preserveAspectRatio": "xMinYMin meet",
+                "xlink:href": f"data:image/png;base64,{img_data}",
+                "opacity": "0.35",
+            },
+        )
+        svg_root["children"].append(image_element)
+
+    defs = Element(
+        "defs",
+        {},
+        children=[
+            Element(
+                "marker",
+                {
+                    "id": "cam-arrow",
+                    "viewBox": "0 0 10 10",
+                    "refX": "10",
+                    "refY": "5",
+                    "markerWidth": "6",
+                    "markerHeight": "6",
+                    "orient": "auto-start-reverse",
+                },
+                children=[
+                    Element(
+                        "path",
+                        {
+                            "d": "M 0 0 L 10 5 L 0 10 z",
+                            "fill": "#111",
+                        },
+                    )
+                ],
+            )
+        ],
+    )
+    svg_root["children"].append(defs)
+
     outlines_group = Element("g", {"fill": "none", "stroke-width": "2"})
     svg_root["children"].append(outlines_group)
 
@@ -204,8 +263,8 @@ def main():
     svg_root["children"].append(label_group)
 
     bounds_extent = max(maxx - minx, maxy - miny)
-    circle_radius = max(bounds_extent * 0.01, 4.0)
-    text_offset = circle_radius * 1.6
+    circle_radius = max(bounds_extent * 0.004, 2.0)
+    text_offset = circle_radius * 2.2
 
     for idx, info in enumerate(visuals):
         color = palette[idx % len(palette)]
@@ -245,6 +304,7 @@ def main():
                     "x2": f"{info['target'][0]:.3f}",
                     "y2": f"{info['target'][1]:.3f}",
                     "stroke": color,
+                    "marker-end": "url(#cam-arrow)",
                 },
             )
         )
