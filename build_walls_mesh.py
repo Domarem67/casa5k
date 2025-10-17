@@ -8,6 +8,7 @@ import shapely.affinity as affinity
 import shapely.geometry as geom
 import shapely.ops as ops
 import trimesh
+from trimesh import creation as tm_creation
 
 
 ICON_COLOR_TO_LABEL = {
@@ -423,6 +424,107 @@ def main():
             args.height,
         )
 
+    def _rectangle_axes(polygon):
+        try:
+            oriented = polygon.minimum_rotated_rectangle
+        except Exception:
+            oriented = polygon
+        coords = np.asarray(oriented.exterior.coords[:-1])
+        if coords.shape[0] < 2:
+            return None
+        vecs = np.diff(np.vstack([coords, coords[0]]), axis=0)
+        lengths = np.linalg.norm(vecs, axis=1)
+        if lengths.size < 2:
+            return None
+        order = np.argsort(lengths)
+        width_vec = vecs[order[-1]]
+        width_len = lengths[order[-1]]
+        other_vec = vecs[order[0]]
+        other_len = lengths[order[0]]
+        if width_len < other_len:
+            width_vec, other_vec = other_vec, width_vec
+            width_len, other_len = other_len, width_len
+        if width_len < 1e-6 or other_len < 1e-6:
+            return None
+        width_dir = width_vec / width_len
+        depth_dir = np.array([-width_dir[1], width_dir[0]])
+        center = coords.mean(axis=0)
+        return width_dir, depth_dir, width_len, other_len, center
+
+    def create_door_models(doors, scale_factor, panel_thickness=0.04, open_angle_deg=28.0):
+        models = []
+        angle_rad = np.deg2rad(open_angle_deg)
+        for idx, door in enumerate(doors):
+            if door.is_empty:
+                continue
+            axes = _rectangle_axes(door)
+            if axes is None:
+                continue
+            width_dir, depth_dir, width_len, depth_len, center_px = axes
+
+            center = np.array([center_px[0] * scale_factor, center_px[1] * scale_factor, 0.0])
+            door_width = max(width_len * scale_factor * 0.98, 0.55)
+            door_thickness = max(panel_thickness, depth_len * scale_factor * 0.35)
+            door_height = min(args.door_height, args.height * 0.97)
+
+            door_box = tm_creation.box(extents=[door_width, door_thickness, door_height])
+
+            orientation = np.eye(4)
+            orientation[:3, 0] = np.array([width_dir[0], width_dir[1], 0.0])
+            orientation[:3, 1] = np.array([depth_dir[0], depth_dir[1], 0.0])
+            orientation[:3, 2] = np.array([0.0, 0.0, 1.0])
+            orientation[:3, 3] = center + np.array([0.0, 0.0, door_height * 0.5])
+            door_box.apply_transform(orientation)
+
+            hinge_point = center + np.array([-0.5 * door_width * width_dir[0], -0.5 * door_width * width_dir[1], door_height * 0.5])
+            rotation = trimesh.transformations.rotation_matrix(angle_rad, [0.0, 0.0, 1.0], hinge_point)
+            door_box.apply_transform(rotation)
+
+            models.append((f"DoorModel_{idx:02d}", door_box))
+        return models
+
+    def create_window_models(windows, scale_factor, sill, head, frame_depth=0.08):
+        height = max(head - sill, 0.0)
+        if height <= 0.05:
+            return []
+        models = []
+        for idx, window in enumerate(windows):
+            if window.is_empty:
+                continue
+            axes = _rectangle_axes(window)
+            if axes is None:
+                continue
+            width_dir, depth_dir, width_len, depth_len, center_px = axes
+
+            center = np.array([center_px[0] * scale_factor, center_px[1] * scale_factor, 0.0])
+            window_width = max(width_len * scale_factor * 0.98, 0.6)
+            window_thickness = max(frame_depth, depth_len * scale_factor * 0.5)
+            window_height = height
+
+            frame_extents = [window_width, window_thickness, window_height]
+            frame = tm_creation.box(extents=frame_extents)
+
+            inset = max(window_width * 0.08, 0.04)
+            inner_width = max(window_width - 2 * inset, 0.2)
+            inner_height = max(window_height - 2 * inset, 0.2)
+            glass_thickness = max(window_thickness * 0.35, 0.02)
+            glass = tm_creation.box(extents=[inner_width, glass_thickness, inner_height])
+            glass_offset_y = (window_thickness - glass_thickness) * 0.4
+            glass.apply_translation([0.0, glass_offset_y, (inner_height - window_height) * 0.5])
+
+            orientation = np.eye(4)
+            orientation[:3, 0] = np.array([width_dir[0], width_dir[1], 0.0])
+            orientation[:3, 1] = np.array([depth_dir[0], depth_dir[1], 0.0])
+            orientation[:3, 2] = np.array([0.0, 0.0, 1.0])
+            translate = center + np.array([0.0, 0.0, sill + window_height * 0.5])
+            orientation[:3, 3] = translate
+            frame.apply_transform(orientation)
+            glass.apply_transform(orientation)
+
+            models.append((f"WindowFrame_{idx:02d}", frame))
+            models.append((f"WindowGlass_{idx:02d}", glass))
+        return models
+
     geometries = []
     if wall_mesh is not None:
         if args.smooth_walls:
@@ -437,6 +539,11 @@ def main():
         geometries.append(("Ceiling", ceiling_mesh))
     if frame_mesh is not None:
         geometries.append(("Frames", frame_mesh))
+
+    door_models = create_door_models(door_polys, scale)
+    window_models = create_window_models(window_polys, scale, args.window_sill, args.window_head)
+    geometries.extend(door_models)
+    geometries.extend(window_models)
 
     if not geometries:
         raise RuntimeError("No geometry produced from SVG input.")
