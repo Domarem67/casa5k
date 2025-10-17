@@ -205,6 +205,11 @@ def _resolve_camera_pose_corners(
             continue
         bisector /= norm_bisector
 
+        cos_angle = float(np.clip(np.dot(-unit_prev, unit_next), -1.0, 1.0))
+        interior_angle = math.degrees(math.acos(cos_angle))
+        if interior_angle < 55.0 or interior_angle > 130.0:
+            continue
+
         probe = current + bisector * min(diag * 0.015, 0.12)
         if not _point_in_polygon(oriented, probe):
             bisector = -bisector
@@ -219,38 +224,30 @@ def _resolve_camera_pose_corners(
             continue
 
         max_forward = _ray_polygon_distance(oriented, initial, bisector, diag * 3.0)
-        if max_forward is None or max_forward <= 0.35:
+        if max_forward is None or max_forward <= 0.45:
             continue
 
-        wall_clearance = max(diag * 0.04, 0.15)
-        eye_offset = float(np.clip(max_forward * 0.4, diag * 0.12, diag * 0.65))
+        wall_clearance = max(diag * 0.05, 0.2)
+        eye_offset = float(np.clip(max_forward * 0.5, diag * 0.16, diag * 0.75))
         eye_xy = initial + bisector * min(eye_offset, max_forward - wall_clearance)
         if not _point_in_polygon(oriented, eye_xy):
             eye_xy = initial + bisector * max(min(max_forward * 0.6, max_forward - wall_clearance * 0.6), wall_clearance)
         if not _point_in_polygon(oriented, eye_xy):
             continue
 
-        direction_to_center = centroid_xy - eye_xy
-        if np.linalg.norm(direction_to_center) < 1e-4:
-            forward_dir = bisector
-        else:
-            forward_dir = direction_to_center / np.linalg.norm(direction_to_center)
-
+        forward_dir = bisector
         forward_dist = _ray_polygon_distance(oriented, eye_xy, forward_dir, diag * 3.5)
-        if forward_dist is None or forward_dist <= 0.3:
-            forward_dir = bisector
-            forward_dist = _ray_polygon_distance(oriented, eye_xy, forward_dir, diag * 3.0)
-            if forward_dist is None or forward_dist <= 0.3:
-                continue
+        if forward_dist is None or forward_dist <= wall_clearance * 1.4:
+            continue
 
-        target_depth = min(forward_dist * 0.72, max(forward_dist - 0.35, 0.95))
-        if target_depth <= 0.35:
-            target_depth = max(forward_dist * 0.58, 0.75)
+        target_depth = min(forward_dist - wall_clearance * 0.9, forward_dist * 0.7)
+        if target_depth <= wall_clearance * 1.2:
+            target_depth = max(forward_dist * 0.55, wall_clearance * 1.4)
         target_xy = eye_xy + forward_dir * target_depth
         if not _point_in_polygon(oriented, target_xy):
             adjust_vec = centroid_xy - target_xy
             adjusted = False
-            for frac in (0.7, 0.5, 0.35):
+            for frac in (0.65, 0.5, 0.35):
                 candidate = target_xy + adjust_vec * frac
                 if _point_in_polygon(oriented, candidate):
                     target_xy = candidate
