@@ -451,14 +451,14 @@ def main():
 
     scene = trimesh.Scene()
 
-    for name, geom in geometries:
-        geom = geom.copy()
-        geom.apply_transform(transform)
+    for name, mesh_geom in geometries:
+        mesh_copy = mesh_geom.copy()
+        mesh_copy.apply_transform(transform)
         if args.invert_z:
-            z_min = geom.vertices[:, 2].min()
-            z_max = geom.vertices[:, 2].max()
-            geom.vertices[:, 2] = z_max - (geom.vertices[:, 2] - z_min)
-        scene.add_geometry(geom, node_name=name, geom_name=name)
+            z_min = mesh_copy.vertices[:, 2].min()
+            z_max = mesh_copy.vertices[:, 2].max()
+            mesh_copy.vertices[:, 2] = z_max - (mesh_copy.vertices[:, 2] - z_min)
+        scene.add_geometry(mesh_copy, node_name=name, geom_name=name)
 
     export_mesh(scene, args.output)
 

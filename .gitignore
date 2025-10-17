@@ -1,4 +1,5 @@
 # Jupyter Notebook
+camera_viewer/
 .ipynb_checkpoints
 .venv
 __pycache__/
