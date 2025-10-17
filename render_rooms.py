@@ -64,6 +64,100 @@ def build_camera_pose(eye, target):
     return pose
 
 
+def _scaled_ring(coords, scale: float):
+    try:
+        arr = np.asarray(coords, dtype=float)
+    except (TypeError, ValueError):
+        return None
+    if arr.ndim != 2 or arr.shape[0] < 3:
+        return None
+    if arr.shape[1] < 2:
+        return None
+    if arr.shape[1] > 2:
+        arr = arr[:, :2]
+    return arr * scale
+
+
+def _clean_polygon(polygon):
+    if polygon is None or polygon.area <= 1e-8:
+        return None
+    if polygon.is_valid:
+        return polygon
+
+    fixed = polygon.buffer(0)
+    if isinstance(fixed, geom.Polygon):
+        polygon = fixed
+    elif isinstance(fixed, geom.MultiPolygon):
+        candidates = [p for p in fixed.geoms if p.area > 1e-8]
+        if not candidates:
+            return None
+        polygon = max(candidates, key=lambda p: p.area)
+    else:
+        return None
+
+    return polygon if polygon.area > 1e-8 else None
+
+
+def build_room_polygon(points_data, scale: float):
+    if points_data in (None, []):
+        return None
+
+    if isinstance(points_data, np.ndarray):
+        return build_room_polygon(points_data.tolist(), scale)
+
+    if isinstance(points_data, dict):
+        coords = points_data.get("coordinates")
+        if coords is not None:
+            return build_room_polygon(coords, scale)
+        shell = (
+            points_data.get("exterior")
+            or points_data.get("shell")
+            or points_data.get("outer")
+        )
+        if shell is None:
+            return None
+        shell_ring = _scaled_ring(shell, scale)
+        if shell_ring is None:
+            return None
+        holes_data = (
+            points_data.get("holes")
+            or points_data.get("interiors")
+            or points_data.get("inner")
+        )
+        holes = []
+        if holes_data:
+            for hole in holes_data:
+                ring = _scaled_ring(hole, scale)
+                if ring is not None:
+                    holes.append(ring)
+        try:
+            polygon = geom.Polygon(shell_ring, holes if holes else None)
+        except (TypeError, ValueError):
+            return None
+        return _clean_polygon(polygon)
+
+    if not isinstance(points_data, (list, tuple)):
+        return None
+
+    ring = _scaled_ring(points_data, scale)
+    if ring is not None:
+        try:
+            polygon = geom.Polygon(ring)
+        except (TypeError, ValueError):
+            polygon = None
+        return _clean_polygon(polygon)
+
+    polygons = []
+    for part in points_data:
+        polygon = build_room_polygon(part, scale)
+        if polygon is not None:
+            polygons.append(polygon)
+    polygons = [poly for poly in polygons if poly.area > 1e-8]
+    if not polygons:
+        return None
+    return max(polygons, key=lambda poly: poly.area)
+
+
 def render_room_views(mesh_path: Path, polygons_path: Path, output_dir: Path, scale: float, wall_height: float, width: int, height: int):
     with polygons_path.open("r", encoding="utf-8") as fp:
         data = json.load(fp)
@@ -85,9 +179,8 @@ def render_room_views(mesh_path: Path, polygons_path: Path, output_dir: Path, sc
     renderer = pyrender.OffscreenRenderer(width, height)
 
     for idx, room in enumerate(rooms):
-        points = np.array(room["points"], dtype=float) * scale
-        polygon = geom.Polygon(points)
-        if polygon.area <= 1e-6:
+        polygon = build_room_polygon(room.get("points"), scale)
+        if polygon is None or polygon.area <= 1e-6:
             continue
 
         eye, target = resolve_camera_pose(polygon, wall_height)
