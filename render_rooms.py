@@ -219,11 +219,14 @@ def _resolve_camera_pose_corners(
             continue
 
         max_forward = _ray_polygon_distance(oriented, initial, bisector, diag * 3.0)
-        if max_forward is None or max_forward <= 0.25:
+        if max_forward is None or max_forward <= 0.35:
             continue
 
-        eye_offset = float(np.clip(max_forward * 0.3, diag * 0.08, diag * 0.5))
-        eye_xy = initial + bisector * min(eye_offset, max_forward * 0.85)
+        wall_clearance = max(diag * 0.04, 0.15)
+        eye_offset = float(np.clip(max_forward * 0.4, diag * 0.12, diag * 0.65))
+        eye_xy = initial + bisector * min(eye_offset, max_forward - wall_clearance)
+        if not _point_in_polygon(oriented, eye_xy):
+            eye_xy = initial + bisector * max(min(max_forward * 0.6, max_forward - wall_clearance * 0.6), wall_clearance)
         if not _point_in_polygon(oriented, eye_xy):
             continue
 
@@ -240,9 +243,9 @@ def _resolve_camera_pose_corners(
             if forward_dist is None or forward_dist <= 0.3:
                 continue
 
-        target_depth = min(forward_dist * 0.72, max(forward_dist - 0.25, 0.75))
-        if target_depth <= 0.25:
-            target_depth = max(forward_dist * 0.55, 0.65)
+        target_depth = min(forward_dist * 0.72, max(forward_dist - 0.35, 0.95))
+        if target_depth <= 0.35:
+            target_depth = max(forward_dist * 0.58, 0.75)
         target_xy = eye_xy + forward_dir * target_depth
         if not _point_in_polygon(oriented, target_xy):
             adjust_vec = centroid_xy - target_xy
