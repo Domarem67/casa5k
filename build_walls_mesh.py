@@ -329,6 +329,11 @@ def main():
         action="store_true",
         help="Post-process walls to merge segments and drop door frames.",
     )
+    parser.add_argument(
+        "--door-debug",
+        type=Path,
+        help="Optional path to JSON debug report for door/window placement.",
+    )
     args = parser.parse_args()
 
     wall_polys, door_polys, window_polys, room_polys = extract_polygons_from_svg(args.svg)
@@ -449,6 +454,9 @@ def main():
         center = coords.mean(axis=0)
         return width_dir, depth_dir, width_len, depth_len, center
 
+    door_debug_records = []
+    window_debug_records = []
+
     def create_door_models(doors, scale_factor, panel_thickness=0.04, open_angle_deg=28.0):
         models = []
         angle_rad = np.deg2rad(open_angle_deg)
@@ -507,7 +515,20 @@ def main():
             rotation = trimesh.transformations.rotation_matrix(angle_rad, [0.0, 0.0, 1.0], hinge_point)
             door_box.apply_transform(rotation)
 
-            models.append((f"DoorModel_{idx:02d}", door_box))
+            name = f"DoorModel_{idx:02d}"
+            models.append((name, door_box))
+            door_debug_records.append(
+                {
+                    "name": name,
+                    "width": float(door_width),
+                    "thickness": float(door_thickness),
+                    "height": float(door_height),
+                    "hinge_local": hinge_point.tolist(),
+                    "center_local": [door_center_xy[0], door_center_xy[1], door_height * 0.5],
+                    "walkway_dir_local": [walkway_dir[0], walkway_dir[1], 0.0],
+                    "normal_dir_local": [wall_normal_dir[0], wall_normal_dir[1], 0.0],
+                }
+            )
         return models
 
     def create_window_models(windows, scale_factor, sill, head, frame_depth=0.08):
@@ -548,8 +569,29 @@ def main():
             frame.apply_transform(orientation)
             glass.apply_transform(orientation)
 
-            models.append((f"WindowFrame_{idx:02d}", frame))
-            models.append((f"WindowGlass_{idx:02d}", glass))
+            frame_name = f"WindowFrame_{idx:02d}"
+            glass_name = f"WindowGlass_{idx:02d}"
+            models.append((frame_name, frame))
+            models.append((glass_name, glass))
+            base_center = np.array([
+                translate[0],
+                translate[1],
+                sill + window_height * 0.5,
+            ])
+            window_debug_records.append(
+                {
+                    "frame_name": frame_name,
+                    "glass_name": glass_name,
+                    "center_local": base_center.tolist(),
+                    "width": float(window_width),
+                    "height": float(window_height),
+                    "thickness": float(window_thickness),
+                    "sill": float(sill),
+                    "head": float(head),
+                    "width_dir_local": [width_dir[0], width_dir[1], 0.0],
+                    "normal_dir_local": [depth_dir[0], depth_dir[1], 0.0],
+                }
+            )
         return models
 
     geometries = []
@@ -572,6 +614,12 @@ def main():
     geometries.extend(door_models)
     geometries.extend(window_models)
 
+    door_debug_map = {rec["name"]: rec for rec in door_debug_records}
+    window_debug_map = {}
+    for rec in window_debug_records:
+        window_debug_map[rec["frame_name"]] = rec
+        window_debug_map[rec["glass_name"]] = rec
+
     if not geometries:
         raise RuntimeError("No geometry produced from SVG input.")
 
@@ -588,11 +636,81 @@ def main():
     for name, mesh_geom in geometries:
         mesh_copy = mesh_geom.copy()
         mesh_copy.apply_transform(transform)
+        reflect_bounds = None
         if args.invert_z:
             z_min = mesh_copy.vertices[:, 2].min()
             z_max = mesh_copy.vertices[:, 2].max()
             mesh_copy.vertices[:, 2] = z_max - (mesh_copy.vertices[:, 2] - z_min)
+            reflect_bounds = (z_min, z_max)
+
+        if name in door_debug_map:
+            rec = door_debug_map[name]
+            hinge_local = np.array(rec["hinge_local"] + [1.0])
+            center_local = np.array(rec["center_local"] + [1.0])
+            walkway_dir_local = np.array(rec["walkway_dir_local"] + [0.0])
+            normal_dir_local = np.array(rec["normal_dir_local"] + [0.0])
+            hinge_world = transform @ hinge_local
+            center_world = transform @ center_local
+            walkway_world = transform @ walkway_dir_local
+            normal_world = transform @ normal_dir_local
+            if reflect_bounds is not None:
+                z_min, z_max = reflect_bounds
+                hinge_world[2] = z_max - (hinge_world[2] - z_min)
+                center_world[2] = z_max - (center_world[2] - z_min)
+                normal_world[2] *= -1.0
+                walkway_world[2] *= -1.0
+            walkway_vec = walkway_world[:3]
+            normal_vec = normal_world[:3]
+            walkway_norm = np.linalg.norm(walkway_vec)
+            normal_norm = np.linalg.norm(normal_vec)
+            if walkway_norm > 1e-9:
+                walkway_vec = walkway_vec / walkway_norm
+            if normal_norm > 1e-9:
+                normal_vec = normal_vec / normal_norm
+            rec["hinge_world"] = hinge_world[:3].tolist()
+            rec["center_world"] = center_world[:3].tolist()
+            rec["walkway_dir_world"] = walkway_vec.tolist()
+            rec["normal_dir_world"] = normal_vec.tolist()
+
+        window_rec = window_debug_map.get(name)
+        if window_rec is not None and "center_world" not in window_rec:
+            center_local = np.array(window_rec["center_local"] + [1.0])
+            width_dir_local = np.array(window_rec["width_dir_local"] + [0.0])
+            normal_dir_local = np.array(window_rec["normal_dir_local"] + [0.0])
+            center_world = transform @ center_local
+            width_world = transform @ width_dir_local
+            normal_world = transform @ normal_dir_local
+            if reflect_bounds is not None:
+                z_min, z_max = reflect_bounds
+                center_world[2] = z_max - (center_world[2] - z_min)
+                normal_world[2] *= -1.0
+                width_world[2] *= -1.0
+            width_vec = width_world[:3]
+            normal_vec = normal_world[:3]
+            width_norm = np.linalg.norm(width_vec)
+            normal_norm = np.linalg.norm(normal_vec)
+            if width_norm > 1e-9:
+                width_vec = width_vec / width_norm
+            if normal_norm > 1e-9:
+                normal_vec = normal_vec / normal_norm
+            window_rec["center_world"] = center_world[:3].tolist()
+            window_rec["width_dir_world"] = width_vec.tolist()
+            window_rec["normal_dir_world"] = normal_vec.tolist()
+
         scene.add_geometry(mesh_copy, node_name=name, geom_name=name)
+
+    if args.door_debug:
+        debug_output = {
+            "transform_rotation_y": rotation_y.tolist(),
+            "transform_rotation_x": rotation_x.tolist(),
+            "invert_z": args.invert_z,
+            "doors": list(door_debug_map.values()),
+            "windows": window_debug_records,
+        }
+        debug_path = Path(args.door_debug)
+        debug_path.parent.mkdir(parents=True, exist_ok=True)
+        debug_path.write_text(json.dumps(debug_output, indent=2), encoding="utf-8")
+        print(f"Door/window debug report saved to {debug_path}")
 
     export_mesh(scene, args.output)
 
