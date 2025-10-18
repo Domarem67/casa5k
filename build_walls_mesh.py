@@ -467,20 +467,56 @@ def main():
             axes = _rectangle_axes(door)
             if axes is None:
                 continue
-            width_dir, depth_dir, width_len_px, depth_len_px, center_px = axes
+            width_dir_raw, depth_dir_raw, width_len_px, depth_len_px, _ = axes
 
-            walkway_dir = width_dir / np.linalg.norm(width_dir)
-            wall_normal_dir = depth_dir / np.linalg.norm(depth_dir)
-            coords_world = np.asarray(door.exterior.coords[:-1], dtype=float) * scale_factor
-            if coords_world.shape[0] < 2:
+            walkway_dir = width_dir_raw / np.linalg.norm(width_dir_raw)
+            wall_normal_dir = depth_dir_raw / np.linalg.norm(depth_dir_raw)
+            wall_normal_dir = wall_normal_dir - walkway_dir * np.dot(wall_normal_dir, walkway_dir)
+            normal_norm = np.linalg.norm(wall_normal_dir)
+            if normal_norm < 1e-9:
                 continue
+            wall_normal_dir /= normal_norm
+
+            coords_world = np.asarray(door.exterior.coords[:-1], dtype=float) * scale_factor
+            if coords_world.shape[0] < 4:
+                continue
+
             proj_walk = coords_world @ walkway_dir
             proj_normal = coords_world @ wall_normal_dir
             min_walk = proj_walk.min()
             max_walk = proj_walk.max()
             min_normal = proj_normal.min()
             max_normal = proj_normal.max()
-            door_width = max(max_walk - min_walk, 0.55)
+
+            tol_walk = max(scale_factor * 0.25, 1e-3)
+            hinge_edges = []
+            n_pts = coords_world.shape[0]
+            for i in range(n_pts):
+                j = (i + 1) % n_pts
+                if abs(proj_walk[i] - min_walk) <= tol_walk and abs(proj_walk[j] - min_walk) <= tol_walk:
+                    hinge_edges.append((coords_world[i], coords_world[j]))
+            if hinge_edges:
+                hinge_point_xy = sum((p + q for p, q in hinge_edges), np.zeros(2)) / (2 * len(hinge_edges))
+            else:
+                hinge_point_xy = coords_world[proj_walk.argmin()]
+
+            opposite_edges = []
+            for i in range(n_pts):
+                j = (i + 1) % n_pts
+                if abs(proj_walk[i] - max_walk) <= tol_walk and abs(proj_walk[j] - max_walk) <= tol_walk:
+                    opposite_edges.append((coords_world[i], coords_world[j]))
+            if opposite_edges:
+                opposite_mid = sum((p + q for p, q in opposite_edges), np.zeros(2)) / (2 * len(opposite_edges))
+                walkway_vec = opposite_mid - hinge_point_xy
+                walkway_len = np.linalg.norm(walkway_vec)
+                if walkway_len > 1e-9:
+                    walkway_dir = walkway_vec / walkway_len
+                    door_width = max(walkway_len, 0.55)
+                else:
+                    door_width = max(max_walk - min_walk, 0.55)
+            else:
+                door_width = max(max_walk - min_walk, 0.55)
+
             wall_thickness_world = max(max_normal - min_normal, panel_thickness * 1.5)
             door_thickness = min(max(panel_thickness, wall_thickness_world * 0.65), wall_thickness_world * 0.95)
             door_height = min(args.door_height, args.height * 0.97)
