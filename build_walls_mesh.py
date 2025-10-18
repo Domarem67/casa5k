@@ -430,26 +430,24 @@ def main():
         except Exception:
             oriented = polygon
         coords = np.asarray(oriented.exterior.coords[:-1])
-        if coords.shape[0] < 2:
+        if coords.shape[0] < 4:
             return None
-        vecs = np.diff(np.vstack([coords, coords[0]]), axis=0)
-        lengths = np.linalg.norm(vecs, axis=1)
-        if lengths.size < 2:
+        edges = np.diff(np.vstack([coords, coords[0]]), axis=0)
+        lengths = np.linalg.norm(edges, axis=1)
+        if lengths.size < 4:
             return None
-        order = np.argsort(lengths)
-        width_vec = vecs[order[-1]]
-        width_len = lengths[order[-1]]
-        other_vec = vecs[order[0]]
-        other_len = lengths[order[0]]
-        if width_len < other_len:
-            width_vec, other_vec = other_vec, width_vec
-            width_len, other_len = other_len, width_len
-        if width_len < 1e-6 or other_len < 1e-6:
+        width_idx = int(np.argmax(lengths))
+        width_vec = edges[width_idx]
+        width_len = lengths[width_idx]
+        depth_idx = (width_idx + 1) % edges.shape[0]
+        depth_vec = edges[depth_idx]
+        depth_len = lengths[depth_idx]
+        if width_len < 1e-6 or depth_len < 1e-6:
             return None
         width_dir = width_vec / width_len
-        depth_dir = np.array([-width_dir[1], width_dir[0]])
+        depth_dir = depth_vec / depth_len
         center = coords.mean(axis=0)
-        return width_dir, depth_dir, width_len, other_len, center
+        return width_dir, depth_dir, width_len, depth_len, center
 
     def create_door_models(doors, scale_factor, panel_thickness=0.04, open_angle_deg=28.0):
         models = []
@@ -460,11 +458,10 @@ def main():
             axes = _rectangle_axes(door)
             if axes is None:
                 continue
-            width_dir, depth_dir, width_len, depth_len, center_px = axes
+            width_dir, depth_dir, width_len_px, depth_len_px, center_px = axes
 
-            walkway_dir = width_dir
-            wall_normal_dir = depth_dir
-
+            walkway_dir = width_dir / np.linalg.norm(width_dir)
+            wall_normal_dir = depth_dir / np.linalg.norm(depth_dir)
             coords_world = np.asarray(door.exterior.coords[:-1], dtype=float) * scale_factor
             if coords_world.shape[0] < 2:
                 continue
