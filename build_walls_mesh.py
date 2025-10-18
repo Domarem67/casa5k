@@ -528,6 +528,10 @@ def main():
                     "center_local": [door_center_xy[0], door_center_xy[1], door_height * 0.5],
                     "walkway_dir_local": [walkway_dir[0], walkway_dir[1], 0.0],
                     "normal_dir_local": [wall_normal_dir[0], wall_normal_dir[1], 0.0],
+                    "polygon_points_world": coords_world.tolist(),
+                    "polygon_center_world": coords_world.mean(axis=0).tolist(),
+                    "proj_walk": proj_walk.tolist(),
+                    "proj_normal": proj_normal.tolist(),
                 }
             )
         return models
@@ -591,6 +595,7 @@ def main():
                     "head": float(head),
                     "width_dir_local": [width_dir[0], width_dir[1], 0.0],
                     "normal_dir_local": [depth_dir[0], depth_dir[1], 0.0],
+                    "polygon_points_world": (np.asarray(window.exterior.coords[:-1], dtype=float) * scale_factor).tolist(),
                 }
             )
         return models
